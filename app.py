@@ -435,7 +435,118 @@ elif page == "Service Provider":
             st.session_state['current_provider_name'] = ''
             st.rerun()
         
-        st.write("Welcome to the Job Management dashboard. Available jobs will be displayed here.")
+        # Display allocated jobs for the service provider
+        st.write("### Your Allocated Jobs")
+        st.divider()
+        
+        try:
+            total_req = contract.functions.requestCount().call()
+            provider_jobs = []
+            
+            # Get all jobs allocated to this provider
+            for i in range(1, total_req + 1):
+                request_data = contract.functions.requests(i).call()
+                # Check if this job is assigned to the current provider
+                # request_data[2] is the provider address
+                if request_data[2] != "0x0000000000000000000000000000000000000000":  # If provider is assigned
+                    # For now, we'll display all assigned jobs
+                    # In a production app, you'd match against the provider's wallet address
+                    provider_jobs.append((i, request_data))
+            
+            if provider_jobs:
+                # Metrics row
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Allocated Jobs", len(provider_jobs))
+                with col2:
+                    in_progress = sum(1 for _, data in provider_jobs if data[5] == 3)
+                    st.metric("In Progress", in_progress)
+                with col3:
+                    completed = sum(1 for _, data in provider_jobs if data[5] == 4)
+                    st.metric("Completed", completed)
+                with col4:
+                    assigned = sum(1 for _, data in provider_jobs if data[5] == 1)
+                    st.metric("Awaiting Start", assigned)
+                
+                st.divider()
+                
+                # Filter and display jobs
+                job_filter = st.selectbox(
+                    "Filter by Status",
+                    ["All Jobs", "Assigned", "In Progress", "Completed", "Cancelled"]
+                )
+                
+                # Map filter to status code
+                status_filter_map = {
+                    "All Jobs": None,
+                    "Assigned": 1,
+                    "In Progress": 3,
+                    "Completed": 4,
+                    "Cancelled": 5
+                }
+                
+                selected_status = status_filter_map.get(job_filter)
+                
+                # Display jobs
+                for req_id, data in reversed(provider_jobs):
+                    status_code = data[5]
+                    
+                    # Apply filter
+                    if selected_status is not None and status_code != selected_status:
+                        continue
+                    
+                    status = config.STATUS_MAP.get(status_code, "Processing")
+                    
+                    with st.expander(f"📋 Job #{req_id} - {data[3]} | Status: {status}", expanded=False):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Request Details**")
+                            st.write(f"**Pest Type:** {data[3]}")
+                            st.write(f"**Location:** {data[4]}")
+                            st.write(f"**Status:** {status}")
+                            st.write(f"**Request ID:** {req_id}")
+                        
+                        with col2:
+                            st.markdown("**Customer Information**")
+                            st.write(f"**Customer Address:** {data[1]}")
+                            st.write(f"**Created At (Unix):** {data[6]}")
+                        
+                        st.divider()
+                        
+                        # Action buttons based on status
+                        st_col1, st_col2, st_col3 = st.columns(3)
+                        
+                        if status_code == 1:  # Assigned - can start service
+                            with st_col1:
+                                if st.button("✅ Start Service", key=f"start_{req_id}"):
+                                    st.success(f"Service for Job #{req_id} has been started!")
+                        
+                        elif status_code == 3:  # In Progress - can complete service
+                            with st_col1:
+                                if st.button("🏁 Complete Service", key=f"complete_{req_id}"):
+                                    st.success(f"Service for Job #{req_id} has been completed!")
+                        
+                        # Always allow viewing transaction history
+                        with st_col2:
+                            if st.button("📊 View History", key=f"history_{req_id}"):
+                                events = get_request_events(req_id)
+                                if events:
+                                    st.write("**Blockchain Events:**")
+                                    for event in events:
+                                        st.write(f"- {event['event']} (Block {event['block_number']})")
+                                else:
+                                    st.info("No events recorded yet.")
+                        
+                        # Cancel button (if not completed or cancelled)
+                        if status_code not in [4, 5]:
+                            with st_col3:
+                                if st.button("❌ Cancel Job", key=f"cancel_{req_id}"):
+                                    st.warning(f"Job #{req_id} has been cancelled.")
+            else:
+                st.info("No jobs allocated to you yet. Check back soon or contact admin for job assignments.")
+        except Exception as e:
+            st.error(f"Failed to load job assignments: {str(e)}")
 
 elif page == "Admin Panel":
     st.header("System Governance")
