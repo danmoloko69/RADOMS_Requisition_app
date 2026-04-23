@@ -3,7 +3,7 @@
 import streamlit as st
 import os
 from web3 import Web3
-from streamlit_js_eval import streamlit_js_eval
+import streamlit_js_eval
 import config
 
 # --- THEME CUSTOMIZATION (Light Green & White) ---
