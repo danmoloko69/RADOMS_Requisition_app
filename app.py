@@ -76,23 +76,29 @@ def get_user_address():
 
 def get_network_id():
     try:
-        # Try chainId first (modern MetaMask)
-        chain_id_hex = streamlit_js_eval(
-            js_expressions="window.ethereum && window.ethereum.chainId ? window.ethereum.chainId : null",
-            key="get_chain_id"
-        )
-        if chain_id_hex:
-            # Convert hex chain ID to decimal
-            return str(int(chain_id_hex, 16))
-
-        # Fallback to networkVersion (older MetaMask)
-        network_version = streamlit_js_eval(
-            js_expressions="window.ethereum && window.ethereum.networkVersion ? window.ethereum.networkVersion : null",
-            key="get_network_version"
-        )
-        if network_version:
-            return str(network_version)
-
+        # Check multiple possible properties where MetaMask stores chain ID
+        properties_to_try = [
+            "window.ethereum.chainId",
+            "window.ethereum.networkVersion",
+            "window.ethereum._chainId", 
+            "window.ethereum._networkVersion"
+        ]
+        
+        for prop in properties_to_try:
+            try:
+                value = streamlit_js_eval(
+                    js_expressions=f"window.ethereum && {prop} ? {prop} : null",
+                    key=f"chain_{prop.split('.')[-1]}"
+                )
+                if value and value != 'null' and value != 'undefined':
+                    # If it's a hex string, convert to decimal
+                    if isinstance(value, str) and value.startswith('0x'):
+                        return str(int(value, 16))
+                    # If it's already a number/string, return as string
+                    return str(value)
+            except:
+                continue
+                
         return None
     except Exception:
         return None
@@ -382,6 +388,84 @@ elif page == "Customer Portal":
 
         with tab1:
             st.subheader("Request Fumigation")
+            
+            # Debug section outside the form
+            if st.checkbox("Show Network Debug Info"):
+                st.subheader("🔍 Network Debug Information")
+                
+                # Check MetaMask availability
+                metamask_exists = streamlit_js_eval(
+                    js_expressions="typeof window.ethereum !== 'undefined'",
+                    key="debug_metamask_exists"
+                )
+                st.write(f"**MetaMask Extension Available:** {metamask_exists}")
+                
+                if metamask_exists:
+                    # Check if connected
+                    is_connected = streamlit_js_eval(
+                        js_expressions="window.ethereum && window.ethereum.isConnected ? window.ethereum.isConnected() : 'N/A'",
+                        key="debug_connected"
+                    )
+                    st.write(f"**MetaMask Connected:** {is_connected}")
+                    
+                    # Check selected address
+                    selected_address = streamlit_js_eval(
+                        js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
+                        key="debug_address"
+                    )
+                    st.write(f"**Selected Address:** {selected_address[:10] + '...' if selected_address else 'None'}")
+                    
+                    # Try different ways to get chain ID
+                    chain_id_hex = streamlit_js_eval(
+                        js_expressions="window.ethereum && window.ethereum.chainId ? window.ethereum.chainId : 'N/A'",
+                        key="debug_chain_id"
+                    )
+                    st.write(f"**Chain ID (hex):** {chain_id_hex}")
+                    
+                    network_version = streamlit_js_eval(
+                        js_expressions="window.ethereum && window.ethereum.networkVersion ? window.ethereum.networkVersion : 'N/A'",
+                        key="debug_network_version"
+                    )
+                    st.write(f"**Network Version:** {network_version}")
+                    
+                    # Check if accounts are connected (simplified)
+                    accounts_check = streamlit_js_eval(
+                        js_expressions="window.ethereum && window.ethereum.selectedAddress ? 'Connected' : 'Not connected'",
+                        key="debug_accounts_simple"
+                    )
+                    st.write(f"**Wallet Connection Status:** {accounts_check}")
+                    
+                    # Try different property access patterns
+                    st.write("**Property Access Attempts:**")
+                    props_to_check = [
+                        ("window.ethereum.chainId", "chainId"),
+                        ("window.ethereum.networkVersion", "networkVersion"), 
+                        ("window.ethereum._chainId", "_chainId"),
+                        ("window.ethereum._networkVersion", "_networkVersion")
+                    ]
+                    
+                    for prop_expr, prop_name in props_to_check:
+                        try:
+                            value = streamlit_js_eval(
+                                js_expressions=f"window.ethereum ? {prop_expr} : 'No MetaMask'",
+                                key=f"debug_{prop_name}"
+                            )
+                            st.write(f"  - {prop_name}: {value}")
+                        except Exception as e:
+                            st.write(f"  - {prop_name}: Error - {str(e)}")
+                    
+                st.write(f"**Final Detected Network ID:** {network_id}")
+                st.write(f"**Expected Network ID:** 11155111 (Sepolia)")
+                
+                st.info("💡 **Troubleshooting Tips:**")
+                st.write("- Make sure MetaMask is unlocked and connected to an account")
+                st.write("- Try refreshing the page after connecting MetaMask")
+                st.write("- Ensure you're using a browser that supports MetaMask (Chrome, Firefox, etc.)")
+                st.write("- Check that MetaMask is set to Sepolia testnet in the network dropdown")
+                
+                if st.button("Refresh Network Detection"):
+                    st.experimental_rerun()
+            
             with st.form("req_form"):
                 p_type = st.selectbox("Pest Type", ["Cockroaches", "Termites", "Rodents", "Mosquitoes", "Other"])
                 location = st.text_input("Service Location", placeholder="Enter your address or location")
@@ -392,62 +476,71 @@ elif page == "Customer Portal":
                     elif not location.strip():
                         st.error("Please enter a service location.")
                     else:
-                        # Check network
-                        network_id = get_network_id()
-                        if network_id != '11155111':  # Sepolia testnet
-                            st.error(f"Please connect to Sepolia testnet in MetaMask. (Current network: {network_id or 'Unknown'})")
-                            st.info("Switch to Sepolia testnet in MetaMask and try again.")
+                        # Check if MetaMask is still available and connected
+                        metamask_available = streamlit_js_eval(
+                            js_expressions="typeof window.ethereum !== 'undefined'",
+                            key="check_metamask_tx"
+                        )
+                        if not metamask_available:
+                            st.error("MetaMask connection lost. Please refresh the page and reconnect.")
                         else:
-                            st.info("Preparing blockchain request...")
-                            
-                            # Build transaction data
-                            try:
-                                # Get the function signature
-                                create_request_func = contract.functions.createRequest(p_type, location)
+                            # Check network
+                            network_id = get_network_id()
+                            if network_id != '11155111':  # Sepolia testnet
+                                st.error(f"Please connect to Sepolia testnet in MetaMask. (Current network: {network_id or 'Unknown'})")
+                                st.info("Switch to Sepolia testnet in MetaMask and try again.")
+                            else:
+                                st.info("Preparing blockchain request...")
                                 
-                                # Build the transaction
-                                tx = create_request_func.buildTransaction({
-                                'from': st.session_state['wallet_address'],
-                                'nonce': w3.eth.getTransactionCount(st.session_state['wallet_address']),
-                                'gas': 200000,
-                                'gasPrice': w3.eth.gasPrice
-                            })
-                            
-                                # Convert transaction to hex format for MetaMask
-                                tx_data = {
-                                    'to': tx['to'],
-                                    'from': tx['from'],
-                                    'data': tx['data'],
-                                    'value': hex(tx.get('value', 0)),
-                                    'gas': hex(tx['gas']),
-                                    'gasPrice': hex(tx['gasPrice'])
-                                }
-                                
-                                # Use MetaMask to send the transaction
-                                js_code = f"""
-                                window.ethereum.request({{
-                                    method: 'eth_sendTransaction',
-                                    params: [{tx_data}]
-                                }}).then(function(txHash) {{
-                                    console.log('Transaction sent:', txHash);
-                                    return txHash;
-                                }}).catch(function(error) {{
-                                    console.error('Transaction failed:', error);
-                                    throw error;
-                                }});
-                                """
-                                
-                                tx_result = streamlit_js_eval(js_expressions=js_code, key=f"send_tx_{st.session_state['wallet_address']}")
-                                
-                                if tx_result:
-                                    st.success(f"✅ Service request submitted successfully! Transaction: {tx_result[:10]}...")
-                                    st.info("Your request has been recorded on the blockchain. You can track its status in the 'Track Service' tab.")
-                                    st.experimental_rerun()
-                                else:
-                                    st.error("Transaction was cancelled or failed. Please try again.")
-                            except Exception as e:
-                                st.error(f"Failed to submit request: {str(e)}")
-                                st.info("Make sure MetaMask is connected and you have sufficient Sepolia ETH for gas fees.")
+                                # Build transaction data
+                                try:
+                                    # Get the function signature
+                                    create_request_func = contract.functions.createRequest(p_type, location)
+                                    
+                                    # Build the transaction using Web3 v7 syntax
+                                    tx = create_request_func.build_transaction({
+                                        'from': st.session_state['wallet_address'],
+                                        'nonce': w3.eth.get_transaction_count(st.session_state['wallet_address']),
+                                        'gas': 200000,
+                                        'gasPrice': w3.eth.gas_price
+                                    })
+                                    
+                                    # Convert transaction to hex format for MetaMask
+                                    tx_data = {
+                                        'to': tx['to'],
+                                        'from': tx['from'],
+                                        'data': tx['data'],
+                                        'value': hex(tx.get('value', 0)),
+                                        'gas': hex(tx['gas']),
+                                        'gasPrice': hex(tx['gasPrice'])
+                                    }
+                                    
+                                    # Use MetaMask to send the transaction
+                                    js_code = f"""
+                                    window.ethereum.request({{
+                                        method: 'eth_sendTransaction',
+                                        params: [{tx_data}]
+                                    }}).then(function(txHash) {{
+                                        console.log('Transaction sent:', txHash);
+                                        return txHash;
+                                    }}).catch(function(error) {{
+                                        console.error('Transaction failed:', error);
+                                        throw error;
+                                    }});
+                                    """
+                                    
+                                    tx_result = streamlit_js_eval(js_expressions=js_code, key=f"send_tx_{st.session_state['wallet_address']}")
+                                    
+                                    if tx_result:
+                                        st.success(f"✅ Service request submitted successfully! Transaction: {tx_result[:10]}...")
+                                        st.info("Your request has been recorded on the blockchain. You can track its status in the 'Track Service' tab.")
+                                        st.experimental_rerun()
+                                    else:
+                                        st.error("Transaction was cancelled or failed. Please try again.")
+                                        
+                                except Exception as e:
+                                    st.error(f"Failed to submit request: {str(e)}")
+                                    st.info("Make sure MetaMask is connected and you have sufficient Sepolia ETH for gas fees.")
 
         with tab2:
             st.subheader("Track Your Service")
