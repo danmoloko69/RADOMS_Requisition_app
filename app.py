@@ -41,9 +41,20 @@ w3 = Web3(Web3.HTTPProvider(config.SEPOLIA_RPC_URL))
 contract_address = w3.to_checksum_address(config.CONTRACT_ADDRESS)
 contract = w3.eth.contract(address=contract_address, abi=config.CONTRACT_ABI)
 
+def has_metamask():
+    try:
+        result = streamlit_js_eval(js_expressions="typeof window.ethereum !== 'undefined'", key="has_metamask")
+        return result is True or str(result).lower() == "true"
+    except Exception:
+        return False
+
+
 def request_wallet_connection():
     try:
-        result = streamlit_js_eval(js_expressions="window.ethereum.request({ method: 'eth_requestAccounts' })", key="connect_wallet")
+        result = streamlit_js_eval(
+            js_expressions="window.ethereum.request({ method: 'eth_requestAccounts' })",
+            key="connect_wallet"
+        )
         if isinstance(result, list) and result:
             return result[0]
     except Exception:
@@ -52,11 +63,12 @@ def request_wallet_connection():
 
 
 def get_user_address():
-    """Ask the browser (MetaMask) for the currently connected wallet address."""
+    """Ask the browser for the currently connected wallet address."""
     try:
-        address = streamlit_js_eval(js_expressions="window.ethereum.selectedAddress", key="get_address")
-        if not address:
-            address = request_wallet_connection()
+        address = streamlit_js_eval(
+            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
+            key="get_address"
+        )
         return w3.to_checksum_address(address) if address else None
     except Exception:
         return None
@@ -64,7 +76,10 @@ def get_user_address():
 
 def get_network_id():
     try:
-        return streamlit_js_eval(js_expressions="window.ethereum.networkVersion", key="get_network")
+        return streamlit_js_eval(
+            js_expressions="window.ethereum && window.ethereum.networkVersion ? window.ethereum.networkVersion : null",
+            key="get_network"
+        )
     except Exception:
         return None
 
@@ -97,6 +112,11 @@ def get_request_events(request_id: int):
 
 if 'wallet_address' not in st.session_state:
     st.session_state['wallet_address'] = None
+
+if st.session_state['wallet_address'] is None and has_metamask():
+    detected_address = get_user_address()
+    if detected_address:
+        st.session_state['wallet_address'] = detected_address
 
 if 'customer_portal_step' not in st.session_state:
     st.session_state['customer_portal_step'] = 'login'
@@ -139,12 +159,15 @@ with st.sidebar:
             st.info(f"Connected network ID: {network_id}")
     else:
         if st.button("Connect MetaMask"):
-            user_wallet = get_user_address()
-            if user_wallet:
-                st.session_state['wallet_address'] = user_wallet
-                st.experimental_rerun()
+            if not has_metamask():
+                st.error("MetaMask is not available in this browser.")
             else:
-                st.error("Unable to connect MetaMask. Please ensure MetaMask is installed and unlocked.")
+                user_wallet = request_wallet_connection()
+                if user_wallet:
+                    st.session_state['wallet_address'] = w3.to_checksum_address(user_wallet)
+                    st.experimental_rerun()
+                else:
+                    st.error("Unable to connect MetaMask. Please ensure MetaMask is installed, unlocked, and that you approved the connection request.")
     
     st.divider()
     page = st.radio("Access Level", ["Live Dashboard", "Company Profile", "Customer Portal", "Service Provider", "Supply Chain", "Admin Panel"])
