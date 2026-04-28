@@ -76,10 +76,24 @@ def get_user_address():
 
 def get_network_id():
     try:
-        return streamlit_js_eval(
-            js_expressions="window.ethereum && window.ethereum.networkVersion ? window.ethereum.networkVersion : null",
-            key="get_network"
+        # Try chainId first (modern MetaMask)
+        chain_id_hex = streamlit_js_eval(
+            js_expressions="window.ethereum && window.ethereum.chainId ? window.ethereum.chainId : null",
+            key="get_chain_id"
         )
+        if chain_id_hex:
+            # Convert hex chain ID to decimal
+            return str(int(chain_id_hex, 16))
+
+        # Fallback to networkVersion (older MetaMask)
+        network_version = streamlit_js_eval(
+            js_expressions="window.ethereum && window.ethereum.networkVersion ? window.ethereum.networkVersion : null",
+            key="get_network_version"
+        )
+        if network_version:
+            return str(network_version)
+
+        return None
     except Exception:
         return None
 
@@ -156,7 +170,8 @@ with st.sidebar:
         st.success(f"Verified Account: {st.session_state['wallet_address'][:6]}...{st.session_state['wallet_address'][-4:]}")
         network_id = get_network_id()
         if network_id:
-            st.info(f"Connected network ID: {network_id}")
+            network_name = "Sepolia" if network_id == '11155111' else f"Chain ID: {network_id}"
+            st.info(f"Connected network: {network_name}")
     else:
         if st.button("Connect MetaMask"):
             if not has_metamask():
@@ -380,7 +395,7 @@ elif page == "Customer Portal":
                         # Check network
                         network_id = get_network_id()
                         if network_id != '11155111':  # Sepolia testnet
-                            st.error("Please connect to Sepolia testnet in MetaMask.")
+                            st.error(f"Please connect to Sepolia testnet in MetaMask. (Current network: {network_id or 'Unknown'})")
                             st.info("Switch to Sepolia testnet in MetaMask and try again.")
                         else:
                             st.info("Preparing blockchain request...")
