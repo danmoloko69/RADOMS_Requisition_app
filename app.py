@@ -369,10 +369,70 @@ elif page == "Customer Portal":
             st.subheader("Request Fumigation")
             with st.form("req_form"):
                 p_type = st.selectbox("Pest Type", ["Cockroaches", "Termites", "Rodents", "Mosquitoes", "Other"])
+                location = st.text_input("Service Location", placeholder="Enter your address or location")
                 desc = st.text_area("Description of the Pest Problem")
                 if st.form_submit_button("Submit Request"):
-                    # build_and_send_tx logic here
-                    st.info("Preparing blockchain request...")
+                    if not st.session_state['wallet_address']:
+                        st.error("Please connect your MetaMask wallet first.")
+                    elif not location.strip():
+                        st.error("Please enter a service location.")
+                    else:
+                        # Check network
+                        network_id = get_network_id()
+                        if network_id != '11155111':  # Sepolia testnet
+                            st.error("Please connect to Sepolia testnet in MetaMask.")
+                            st.info("Switch to Sepolia testnet in MetaMask and try again.")
+                        else:
+                            st.info("Preparing blockchain request...")
+                            
+                            # Build transaction data
+                            try:
+                                # Get the function signature
+                                create_request_func = contract.functions.createRequest(p_type, location)
+                                
+                                # Build the transaction
+                                tx = create_request_func.buildTransaction({
+                                'from': st.session_state['wallet_address'],
+                                'nonce': w3.eth.getTransactionCount(st.session_state['wallet_address']),
+                                'gas': 200000,
+                                'gasPrice': w3.eth.gasPrice
+                            })
+                            
+                                # Convert transaction to hex format for MetaMask
+                                tx_data = {
+                                    'to': tx['to'],
+                                    'from': tx['from'],
+                                    'data': tx['data'],
+                                    'value': hex(tx.get('value', 0)),
+                                    'gas': hex(tx['gas']),
+                                    'gasPrice': hex(tx['gasPrice'])
+                                }
+                                
+                                # Use MetaMask to send the transaction
+                                js_code = f"""
+                                window.ethereum.request({{
+                                    method: 'eth_sendTransaction',
+                                    params: [{tx_data}]
+                                }}).then(function(txHash) {{
+                                    console.log('Transaction sent:', txHash);
+                                    return txHash;
+                                }}).catch(function(error) {{
+                                    console.error('Transaction failed:', error);
+                                    throw error;
+                                }});
+                                """
+                                
+                                tx_result = streamlit_js_eval(js_expressions=js_code, key=f"send_tx_{st.session_state['wallet_address']}")
+                                
+                                if tx_result:
+                                    st.success(f"✅ Service request submitted successfully! Transaction: {tx_result[:10]}...")
+                                    st.info("Your request has been recorded on the blockchain. You can track its status in the 'Track Service' tab.")
+                                    st.experimental_rerun()
+                                else:
+                                    st.error("Transaction was cancelled or failed. Please try again.")
+                            except Exception as e:
+                                st.error(f"Failed to submit request: {str(e)}")
+                                st.info("Make sure MetaMask is connected and you have sufficient Sepolia ETH for gas fees.")
 
         with tab2:
             st.subheader("Track Your Service")
