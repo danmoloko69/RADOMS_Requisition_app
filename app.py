@@ -3,7 +3,7 @@
 import streamlit as st
 import os
 from web3 import Web3
-import streamlit_js_eval
+from streamlit_js_eval import streamlit_js_eval
 import config
 
 # --- THEME CUSTOMIZATION (Light Green & White) ---
@@ -358,7 +358,14 @@ elif page == "Service Provider":
                 if st.form_submit_button("Login"):
                     if login_company_name in st.session_state['registered_providers']:
                         provider = st.session_state['registered_providers'][login_company_name]
-                        if (provider.get('registration_number') == login_registration_number and 
+                        
+                        # Check if provider is approved
+                        provider_status = provider.get('status', 'pending')
+                        if provider_status == 'pending':
+                            st.warning("⏳ Your registration is pending admin approval. Please check back later.")
+                        elif provider_status == 'rejected':
+                            st.error("❌ Your registration has been rejected. Please contact support.")
+                        elif (provider.get('registration_number') == login_registration_number and 
                             provider.get('password') == login_password):
                             st.session_state['service_provider_logged_in'] = True
                             st.session_state['current_provider_name'] = login_company_name
@@ -416,11 +423,12 @@ elif page == "Service Provider":
                             'physical_address': physical_address,
                             'service_areas': service_areas,
                             'contact_phone': contact_phone,
-                            'contact_email': contact_email
+                            'contact_email': contact_email,
+                            'status': 'pending'  # Set status to pending for admin approval
                         }
-                        st.session_state['service_provider_logged_in'] = True
-                        st.session_state['current_provider_name'] = company_name
-                        st.success("Registration successful! You are now logged in.")
+                        st.success("✅ Registration successful! Your application is now pending admin approval. You will be able to login once approved.")
+                        st.info("An admin will review your details and approve/reject your application shortly.")
+                        st.session_state['provider_portal_step'] = 'login'
                         st.rerun()
             
             if st.button("Already have an account? Login here"):
@@ -436,117 +444,128 @@ elif page == "Service Provider":
             st.rerun()
         
         # Display allocated jobs for the service provider
-        st.write("### Your Allocated Jobs")
-        st.divider()
+        current_provider_status = st.session_state['registered_providers'].get(
+            st.session_state['current_provider_name'], {}
+        ).get('status', 'pending')
         
-        try:
-            total_req = contract.functions.requestCount().call()
-            provider_jobs = []
+        if current_provider_status == 'approved':
+            st.write("### Your Allocated Jobs")
+            st.divider()
             
-            # Get all jobs allocated to this provider
-            for i in range(1, total_req + 1):
-                request_data = contract.functions.requests(i).call()
-                # Check if this job is assigned to the current provider
-                # request_data[2] is the provider address
-                if request_data[2] != "0x0000000000000000000000000000000000000000":  # If provider is assigned
-                    # For now, we'll display all assigned jobs
-                    # In a production app, you'd match against the provider's wallet address
-                    provider_jobs.append((i, request_data))
-            
-            if provider_jobs:
-                # Metrics row
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Allocated Jobs", len(provider_jobs))
-                with col2:
-                    in_progress = sum(1 for _, data in provider_jobs if data[5] == 3)
-                    st.metric("In Progress", in_progress)
-                with col3:
-                    completed = sum(1 for _, data in provider_jobs if data[5] == 4)
-                    st.metric("Completed", completed)
-                with col4:
-                    assigned = sum(1 for _, data in provider_jobs if data[5] == 1)
-                    st.metric("Awaiting Start", assigned)
+            try:
+                total_req = contract.functions.requestCount().call()
+                provider_jobs = []
                 
-                st.divider()
+                # Get all jobs allocated to this provider
+                for i in range(1, total_req + 1):
+                    request_data = contract.functions.requests(i).call()
+                    # Check if this job is assigned to the current provider
+                    # request_data[2] is the provider address
+                    if request_data[2] != "0x0000000000000000000000000000000000000000":  # If provider is assigned
+                        # For now, we'll display all assigned jobs
+                        # In a production app, you'd match against the provider's wallet address
+                        provider_jobs.append((i, request_data))
                 
-                # Filter and display jobs
-                job_filter = st.selectbox(
-                    "Filter by Status",
-                    ["All Jobs", "Assigned", "In Progress", "Completed", "Cancelled"]
-                )
-                
-                # Map filter to status code
-                status_filter_map = {
-                    "All Jobs": None,
-                    "Assigned": 1,
-                    "In Progress": 3,
-                    "Completed": 4,
-                    "Cancelled": 5
-                }
-                
-                selected_status = status_filter_map.get(job_filter)
-                
-                # Display jobs
-                for req_id, data in reversed(provider_jobs):
-                    status_code = data[5]
+                if provider_jobs:
+                    # Metrics row
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total Allocated Jobs", len(provider_jobs))
+                    with col2:
+                        in_progress = sum(1 for _, data in provider_jobs if data[5] == 3)
+                        st.metric("In Progress", in_progress)
+                    with col3:
+                        completed = sum(1 for _, data in provider_jobs if data[5] == 4)
+                        st.metric("Completed", completed)
+                    with col4:
+                        assigned = sum(1 for _, data in provider_jobs if data[5] == 1)
+                        st.metric("Awaiting Start", assigned)
                     
-                    # Apply filter
-                    if selected_status is not None and status_code != selected_status:
-                        continue
+                    st.divider()
                     
-                    status = config.STATUS_MAP.get(status_code, "Processing")
+                    # Filter and display jobs
+                    job_filter = st.selectbox(
+                        "Filter by Status",
+                        ["All Jobs", "Assigned", "In Progress", "Completed", "Cancelled"]
+                    )
                     
-                    with st.expander(f"📋 Job #{req_id} - {data[3]} | Status: {status}", expanded=False):
-                        col1, col2 = st.columns(2)
+                    # Map filter to status code
+                    status_filter_map = {
+                        "All Jobs": None,
+                        "Assigned": 1,
+                        "In Progress": 3,
+                        "Completed": 4,
+                        "Cancelled": 5
+                    }
+                    
+                    selected_status = status_filter_map.get(job_filter)
+                    
+                    # Display jobs
+                    for req_id, data in reversed(provider_jobs):
+                        status_code = data[5]
                         
-                        with col1:
-                            st.markdown("**Request Details**")
-                            st.write(f"**Pest Type:** {data[3]}")
-                            st.write(f"**Location:** {data[4]}")
-                            st.write(f"**Status:** {status}")
-                            st.write(f"**Request ID:** {req_id}")
+                        # Apply filter
+                        if selected_status is not None and status_code != selected_status:
+                            continue
                         
-                        with col2:
-                            st.markdown("**Customer Information**")
-                            st.write(f"**Customer Address:** {data[1]}")
-                            st.write(f"**Created At (Unix):** {data[6]}")
+                        status = config.STATUS_MAP.get(status_code, "Processing")
                         
-                        st.divider()
-                        
-                        # Action buttons based on status
-                        st_col1, st_col2, st_col3 = st.columns(3)
-                        
-                        if status_code == 1:  # Assigned - can start service
-                            with st_col1:
-                                if st.button("✅ Start Service", key=f"start_{req_id}"):
-                                    st.success(f"Service for Job #{req_id} has been started!")
-                        
-                        elif status_code == 3:  # In Progress - can complete service
-                            with st_col1:
-                                if st.button("🏁 Complete Service", key=f"complete_{req_id}"):
-                                    st.success(f"Service for Job #{req_id} has been completed!")
-                        
-                        # Always allow viewing transaction history
-                        with st_col2:
-                            if st.button("📊 View History", key=f"history_{req_id}"):
-                                events = get_request_events(req_id)
-                                if events:
-                                    st.write("**Blockchain Events:**")
-                                    for event in events:
-                                        st.write(f"- {event['event']} (Block {event['block_number']})")
-                                else:
-                                    st.info("No events recorded yet.")
-                        
-                        # Cancel button (if not completed or cancelled)
-                        if status_code not in [4, 5]:
-                            with st_col3:
-                                if st.button("❌ Cancel Job", key=f"cancel_{req_id}"):
-                                    st.warning(f"Job #{req_id} has been cancelled.")
-            else:
-                st.info("No jobs allocated to you yet. Check back soon or contact admin for job assignments.")
-        except Exception as e:
-            st.error(f"Failed to load job assignments: {str(e)}")
+                        with st.expander(f"📋 Job #{req_id} - {data[3]} | Status: {status}", expanded=False):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("**Request Details**")
+                                st.write(f"**Pest Type:** {data[3]}")
+                                st.write(f"**Location:** {data[4]}")
+                                st.write(f"**Status:** {status}")
+                                st.write(f"**Request ID:** {req_id}")
+                            
+                            with col2:
+                                st.markdown("**Customer Information**")
+                                st.write(f"**Customer Address:** {data[1]}")
+                                st.write(f"**Created At (Unix):** {data[6]}")
+                            
+                            st.divider()
+                            
+                            # Action buttons based on status
+                            st_col1, st_col2, st_col3 = st.columns(3)
+                            
+                            if status_code == 1:  # Assigned - can start service
+                                with st_col1:
+                                    if st.button("✅ Start Service", key=f"start_{req_id}"):
+                                        st.success(f"Service for Job #{req_id} has been started!")
+                            
+                            elif status_code == 3:  # In Progress - can complete service
+                                with st_col1:
+                                    if st.button("🏁 Complete Service", key=f"complete_{req_id}"):
+                                        st.success(f"Service for Job #{req_id} has been completed!")
+                            
+                            # Always allow viewing transaction history
+                            with st_col2:
+                                if st.button("📊 View History", key=f"history_{req_id}"):
+                                    events = get_request_events(req_id)
+                                    if events:
+                                        st.write("**Blockchain Events:**")
+                                        for event in events:
+                                            st.write(f"- {event['event']} (Block {event['block_number']})")
+                                    else:
+                                        st.info("No events recorded yet.")
+                            
+                            # Cancel button (if not completed or cancelled)
+                            if status_code not in [4, 5]:
+                                with st_col3:
+                                    if st.button("❌ Cancel Job", key=f"cancel_{req_id}"):
+                                        st.warning(f"Job #{req_id} has been cancelled.")
+                else:
+                    st.info("No jobs allocated to you yet. Check back soon or contact admin for job assignments.")
+            except Exception as e:
+                st.error(f"Failed to load job assignments: {str(e)}")
+        else:
+            st.warning(f"⏳ Your account is not yet approved. Current status: {current_provider_status}")
+            if current_provider_status == 'pending':
+                st.info("An admin will review your registration and approve your account shortly. You'll be able to view your jobs once approved.")
+            elif current_provider_status == 'rejected':
+                st.error("Your registration has been rejected. Please contact support for more information.")
 
 elif page == "Admin Panel":
     st.header("System Governance")
@@ -561,21 +580,74 @@ elif page == "Admin Panel":
         st.write("Review and verify service provider registrations.")
         
         if st.session_state['registered_providers']:
-            provider_list = list(st.session_state['registered_providers'].keys())
-            selected_provider = st.selectbox("Select Service Provider to Verify", provider_list)
+            # Separate providers by status
+            pending_providers = {name: data for name, data in st.session_state['registered_providers'].items() 
+                                if data.get('status', 'pending') == 'pending'}
+            approved_providers = {name: data for name, data in st.session_state['registered_providers'].items() 
+                                 if data.get('status', 'pending') == 'approved'}
+            rejected_providers = {name: data for name, data in st.session_state['registered_providers'].items() 
+                                 if data.get('status', 'pending') == 'rejected'}
             
-            if selected_provider:
-                provider_data = st.session_state['registered_providers'][selected_provider]
-                st.write(f"**Company Name:** {selected_provider}")
-                st.write(f"**Registration Number:** {provider_data.get('registration_number', 'N/A')}")
-                st.write(f"**Years of Operation:** {provider_data.get('years_operation', 'N/A')}")
-                st.write(f"**Physical Address:** {provider_data.get('physical_address', 'N/A')}")
-                st.write(f"**Service Areas:** {provider_data.get('service_areas', 'N/A')}")
-                st.write(f"**Contact Phone:** {provider_data.get('contact_phone', 'N/A')}")
-                st.write(f"**Contact Email:** {provider_data.get('contact_email', 'N/A')}")
-                
-                if st.button(f"Approve {selected_provider}"):
-                    st.success(f"{selected_provider} has been approved as a verified SME.")
+            # Display pending providers
+            if pending_providers:
+                st.markdown("### ⏳ Pending Approval")
+                for company_name, provider_data in pending_providers.items():
+                    with st.expander(f"📋 {company_name} (Pending)", expanded=True):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Company Name:** {company_name}")
+                            st.write(f"**Registration Number:** {provider_data.get('registration_number', 'N/A')}")
+                            st.write(f"**Years of Operation:** {provider_data.get('years_operation', 'N/A')}")
+                            st.write(f"**Physical Address:** {provider_data.get('physical_address', 'N/A')}")
+                        
+                        with col2:
+                            st.write(f"**Service Areas:** {provider_data.get('service_areas', 'N/A')}")
+                            st.write(f"**Contact Phone:** {provider_data.get('contact_phone', 'N/A')}")
+                            st.write(f"**Contact Email:** {provider_data.get('contact_email', 'N/A')}")
+                        
+                        st.divider()
+                        act_col1, act_col2 = st.columns(2)
+                        
+                        with act_col1:
+                            if st.button(f"✅ Approve {company_name}", key=f"approve_{company_name}"):
+                                st.session_state['registered_providers'][company_name]['status'] = 'approved'
+                                st.success(f"✅ {company_name} has been approved as a verified SME!")
+                                st.rerun()
+                        
+                        with act_col2:
+                            if st.button(f"❌ Reject {company_name}", key=f"reject_{company_name}"):
+                                st.session_state['registered_providers'][company_name]['status'] = 'rejected'
+                                st.warning(f"❌ {company_name} has been rejected.")
+                                st.rerun()
+            else:
+                st.info("✅ No pending approvals at the moment.")
+            
+            # Display approved providers
+            if approved_providers:
+                st.markdown("### ✅ Approved Providers")
+                for company_name, provider_data in approved_providers.items():
+                    with st.expander(f"🟢 {company_name} (Approved)", expanded=False):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Company Name:** {company_name}")
+                            st.write(f"**Registration Number:** {provider_data.get('registration_number', 'N/A')}")
+                            st.write(f"**Years of Operation:** {provider_data.get('years_operation', 'N/A')}")
+                        
+                        with col2:
+                            st.write(f"**Service Areas:** {provider_data.get('service_areas', 'N/A')}")
+                            st.write(f"**Contact Phone:** {provider_data.get('contact_phone', 'N/A')}")
+                            st.write(f"**Contact Email:** {provider_data.get('contact_email', 'N/A')}")
+            
+            # Display rejected providers
+            if rejected_providers:
+                st.markdown("### ❌ Rejected Providers")
+                for company_name, provider_data in rejected_providers.items():
+                    with st.expander(f"🔴 {company_name} (Rejected)", expanded=False):
+                        st.write(f"**Company Name:** {company_name}")
+                        st.write(f"**Registration Number:** {provider_data.get('registration_number', 'N/A')}")
+                        st.write(f"**Contact Email:** {provider_data.get('contact_email', 'N/A')}")
         else:
             st.info("No service providers registered yet.")
     
@@ -583,14 +655,18 @@ elif page == "Admin Panel":
         st.subheader("Manual Job Assignment")
         st.write("When the system is unable to automatically assign jobs, team members can manually assign them here.")
         
+        # Get only approved providers for job assignment
+        approved_providers = {name: data for name, data in st.session_state['registered_providers'].items() 
+                             if data.get('status', 'pending') == 'approved'}
+        
         with st.form("manual_job_assignment"):
             request_id = st.number_input("Request ID", min_value=1, step=1)
             
-            if st.session_state['registered_providers']:
-                provider_list = list(st.session_state['registered_providers'].keys())
+            if approved_providers:
+                provider_list = list(approved_providers.keys())
                 assigned_provider = st.selectbox("Assign to Service Provider", provider_list)
             else:
-                st.warning("No verified service providers available.")
+                st.warning("⚠️ No approved service providers available for job assignment. Please approve providers first.")
                 assigned_provider = None
             
             assignment_notes = st.text_area("Assignment Notes")
