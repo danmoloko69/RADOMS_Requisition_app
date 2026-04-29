@@ -12,7 +12,7 @@ TAGLINE = "From Infestation to Protection"
 DESCRIPTION = "A blockchain-powered platform solving the fragmentation and lack of trust in the fumigation industry."
 
 # Path to the new logo image
-LOGO_PATH = "RADOMS_Logo_New.jpg" 
+LOGO_PATH = "RADOMS_Logo_New.png" 
 
 # Human-Readable Status Mapping
 STATUS_MAP = {

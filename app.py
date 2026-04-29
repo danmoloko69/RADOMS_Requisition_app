@@ -157,13 +157,7 @@ if 'provider_portal_step' not in st.session_state:
     st.session_state['provider_portal_step'] = 'login'
 
 # --- HEADER LOGIC ---
-try:
-    if os.path.exists(config.LOGO_PATH):
-        st.image(config.LOGO_PATH, width=220)
-    else:
-        st.title(config.APP_NAME)
-except Exception:
-    st.title(config.APP_NAME)
+st.title(config.APP_NAME)
 
 st.caption(config.TAGLINE)
 st.write(config.DESCRIPTION)
@@ -171,6 +165,7 @@ st.divider()
 
 # --- SIDEBAR & WALLET ---
 with st.sidebar:
+    st.image(config.LOGO_PATH)
     st.header("RADOMS Navigation")
     if st.session_state['wallet_address']:
         st.success(f"Verified Account: {st.session_state['wallet_address'][:6]}...{st.session_state['wallet_address'][-4:]}")
