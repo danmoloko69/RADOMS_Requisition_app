@@ -2,6 +2,7 @@
 
 import streamlit as st
 import os
+from pathlib import Path
 from web3 import Web3
 from streamlit_js_eval import streamlit_js_eval
 import config
@@ -40,6 +41,22 @@ st.markdown("""
 w3 = Web3(Web3.HTTPProvider(config.SEPOLIA_RPC_URL))
 contract_address = w3.to_checksum_address(config.CONTRACT_ADDRESS)
 contract = w3.eth.contract(address=contract_address, abi=config.CONTRACT_ABI)
+
+
+APP_DIR = Path(__file__).resolve().parent
+
+
+def resolve_asset_path(path: str) -> Path:
+    asset_path = Path(path)
+    return asset_path if asset_path.is_absolute() else APP_DIR / asset_path
+
+
+def show_logo():
+    logo_path = resolve_asset_path(config.LOGO_PATH)
+    if logo_path.exists():
+        st.image(str(logo_path))
+    else:
+        st.markdown(f"### {config.APP_NAME}")
 
 def has_metamask():
     try:
@@ -165,7 +182,7 @@ st.divider()
 
 # --- SIDEBAR & WALLET ---
 with st.sidebar:
-    st.image(config.LOGO_PATH)
+    show_logo()
     st.header("RADOMS Navigation")
     if st.session_state['wallet_address']:
         st.success(f"Verified Account: {st.session_state['wallet_address'][:6]}...{st.session_state['wallet_address'][-4:]}")
