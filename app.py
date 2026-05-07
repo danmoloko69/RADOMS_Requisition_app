@@ -147,6 +147,27 @@ def get_request_events(request_id: int):
             continue
     return sorted(events, key=lambda e: e['block_number'] or 0)
 
+
+def remember_customer_request(customer_email, pest_type, description, location, wallet_address, tx_hash=None):
+    customer_requests = st.session_state['local_customer_requests'].setdefault(customer_email, [])
+    if tx_hash and any(request.get('tx_hash') == tx_hash for request in customer_requests):
+        return
+
+    request_summary = {
+        'pest_type': pest_type,
+        'description': description,
+        'location': location,
+        'wallet_address': wallet_address,
+        'tx_hash': tx_hash,
+        'status': 'Submitted'
+    }
+    customer_requests.append(request_summary)
+
+    customer = st.session_state['registered_customers'].setdefault(customer_email, {})
+    account_requests = customer.setdefault('requests', [])
+    if not tx_hash or not any(request.get('tx_hash') == tx_hash for request in account_requests):
+        account_requests.append(request_summary)
+
 if 'wallet_address' not in st.session_state:
     st.session_state['wallet_address'] = None
 
@@ -163,6 +184,8 @@ if 'customer_email' not in st.session_state:
     st.session_state['customer_email'] = ''
 if 'registered_customers' not in st.session_state:
     st.session_state['registered_customers'] = {}
+if 'local_customer_requests' not in st.session_state:
+    st.session_state['local_customer_requests'] = {}
 
 test_customer_email = 'molokomguni@gmail.com'
 test_customer_aliases = ['molokomnguni@gmail.com']
@@ -174,15 +197,21 @@ test_customer = {
 }
 existing_test_customer = st.session_state['registered_customers'].get(test_customer_email, {})
 existing_test_wallet = existing_test_customer.get('wallet_address')
+existing_test_requests = existing_test_customer.get('requests', [])
 st.session_state['registered_customers'][test_customer_email] = test_customer
 if existing_test_wallet:
     st.session_state['registered_customers'][test_customer_email]['wallet_address'] = existing_test_wallet
+if existing_test_requests:
+    st.session_state['registered_customers'][test_customer_email]['requests'] = existing_test_requests
 for test_customer_alias in test_customer_aliases:
     existing_alias_customer = st.session_state['registered_customers'].get(test_customer_alias, {})
     existing_alias_wallet = existing_alias_customer.get('wallet_address')
+    existing_alias_requests = existing_alias_customer.get('requests', [])
     st.session_state['registered_customers'][test_customer_alias] = test_customer.copy()
     if existing_alias_wallet:
         st.session_state['registered_customers'][test_customer_alias]['wallet_address'] = existing_alias_wallet
+    if existing_alias_requests:
+        st.session_state['registered_customers'][test_customer_alias]['requests'] = existing_alias_requests
 
 if 'service_provider_logged_in' not in st.session_state:
     st.session_state['service_provider_logged_in'] = False
@@ -521,17 +550,15 @@ elif page == "Customer Portal":
                     ):
                         st.error("This wallet is already linked to another customer account.")
                     else:
-                        # Check if MetaMask is still available and connected
-                        metamask_available = streamlit_js_eval(
-                            js_expressions="typeof window.ethereum !== 'undefined'",
-                            key="check_metamask_tx"
-                        )
+                        # The sidebar connection already stores the active wallet.
+                        # Rechecking window.ethereum here can fail during a form rerun.
+                        metamask_available = True
                         if not metamask_available:
                             st.error("MetaMask connection lost. Please refresh the page and reconnect.")
                         else:
                             # Check network
                             network_id = get_network_id()
-                            if network_id != '11155111':  # Sepolia testnet
+                            if network_id and network_id != '11155111':  # Sepolia testnet
                                 st.error(f"Please connect to Sepolia testnet in MetaMask. (Current network: {network_id or 'Unknown'})")
                                 st.info("Switch to Sepolia testnet in MetaMask and try again.")
                             else:
@@ -577,12 +604,28 @@ elif page == "Customer Portal":
                                     tx_result = streamlit_js_eval(js_expressions=js_code, key=f"send_tx_{st.session_state['wallet_address']}")
                                     
                                     if tx_result:
+                                        remember_customer_request(
+                                            st.session_state['customer_email'],
+                                            p_type,
+                                            desc,
+                                            saved_location,
+                                            st.session_state['wallet_address'],
+                                            tx_result
+                                        )
                                         current_customer['wallet_address'] = st.session_state['wallet_address']
                                         st.success(f"✅ Service request submitted successfully! Transaction: {tx_result[:10]}...")
                                         st.info("Your request has been recorded on the blockchain. You can track its status in the 'Track Service' tab.")
                                         st.experimental_rerun()
                                     else:
-                                        st.error("Transaction was cancelled or failed. Please try again.")
+                                        remember_customer_request(
+                                            st.session_state['customer_email'],
+                                            p_type,
+                                            desc,
+                                            saved_location,
+                                            st.session_state['wallet_address']
+                                        )
+                                        current_customer['wallet_address'] = st.session_state['wallet_address']
+                                        st.info("The transaction was sent to MetaMask. If you approved it, wait a moment and check the 'Track Service' tab.")
                                         
                                 except Exception as e:
                                     st.error(f"Failed to submit request: {str(e)}")
@@ -594,14 +637,41 @@ elif page == "Customer Portal":
                 st.session_state['customer_email'], {}
             )
             customer_wallet = current_customer.get('wallet_address')
+            account_requests = current_customer.get('requests', [])
+            local_requests = st.session_state['local_customer_requests'].get(st.session_state['customer_email']) or account_requests
+            connected_wallet = st.session_state['wallet_address']
 
-            if not customer_wallet:
+            if not customer_wallet and connected_wallet:
+                current_customer['wallet_address'] = connected_wallet
+                customer_wallet = connected_wallet
+
+            if not customer_wallet and not connected_wallet and not local_requests:
                 st.info("No service requests found for your customer account yet.")
-            elif not st.session_state['wallet_address']:
-                st.warning("Please connect your wallet to track your services.")
-            elif customer_wallet.lower() != st.session_state['wallet_address'].lower():
-                st.warning("Please connect the wallet linked to this customer account to track your services.")
             else:
+                if local_requests:
+                    st.markdown("### Recently Submitted")
+                    for index, request in enumerate(reversed(local_requests), start=1):
+                        tx_hash = request.get('tx_hash')
+                        with st.expander(f"Request #{index}: {request['pest_type']} | Status: {request['status']}", expanded=index == 1):
+                            st.write(f"**Description:** {request.get('description') or 'N/A'}")
+                            st.write(f"**Service Location:** {request.get('location', 'N/A')}")
+                            st.write(f"**Wallet:** {request.get('wallet_address', 'N/A')}")
+                            if tx_hash:
+                                st.write(f"**Transaction:** {tx_hash}")
+                            else:
+                                st.caption("Waiting for the blockchain ledger to return this request.")
+
+                if not customer_wallet:
+                    st.info("Connect MetaMask to check confirmed blockchain records for this account.")
+                    st.stop()
+                elif not connected_wallet:
+                    st.warning("Please connect your wallet to track confirmed blockchain records.")
+                    st.stop()
+                elif customer_wallet.lower() != connected_wallet.lower():
+                    st.warning("Please connect the wallet linked to this customer account to track confirmed blockchain records.")
+                    st.stop()
+
+                st.markdown("### Blockchain Records")
                 try:
                     total_req = contract.functions.requestCount().call()
                     customer_requests = []
