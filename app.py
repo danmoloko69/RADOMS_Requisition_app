@@ -164,6 +164,26 @@ if 'customer_email' not in st.session_state:
 if 'registered_customers' not in st.session_state:
     st.session_state['registered_customers'] = {}
 
+test_customer_email = 'molokomguni@gmail.com'
+test_customer_aliases = ['molokomnguni@gmail.com']
+test_customer = {
+    'full_name': 'Bonga',
+    'password': 'Bonga',
+    'contact_number': '0608040094',
+    'home_address': '85 Wolmerans Street Johannesburg 2002'
+}
+existing_test_customer = st.session_state['registered_customers'].get(test_customer_email, {})
+existing_test_wallet = existing_test_customer.get('wallet_address')
+st.session_state['registered_customers'][test_customer_email] = test_customer
+if existing_test_wallet:
+    st.session_state['registered_customers'][test_customer_email]['wallet_address'] = existing_test_wallet
+for test_customer_alias in test_customer_aliases:
+    existing_alias_customer = st.session_state['registered_customers'].get(test_customer_alias, {})
+    existing_alias_wallet = existing_alias_customer.get('wallet_address')
+    st.session_state['registered_customers'][test_customer_alias] = test_customer.copy()
+    if existing_alias_wallet:
+        st.session_state['registered_customers'][test_customer_alias]['wallet_address'] = existing_alias_wallet
+
 if 'service_provider_logged_in' not in st.session_state:
     st.session_state['service_provider_logged_in'] = False
 if 'registered_providers' not in st.session_state:
@@ -172,6 +192,10 @@ if 'current_provider_name' not in st.session_state:
     st.session_state['current_provider_name'] = ''
 if 'provider_portal_step' not in st.session_state:
     st.session_state['provider_portal_step'] = 'login'
+if 'admin_logged_in' not in st.session_state:
+    st.session_state['admin_logged_in'] = False
+if 'admin_username' not in st.session_state:
+    st.session_state['admin_username'] = ''
 
 # --- HEADER LOGIC ---
 st.title(config.APP_NAME)
@@ -350,6 +374,7 @@ elif page == "Customer Portal":
                 contact_number = st.text_input("Contact Number")
                 home_address = st.text_area("Home Address")
                 if st.form_submit_button("Create Account"):
+                    email = email.strip().lower()
                     if not email or not create_password or not confirm_password:
                         st.error("Please fill in email, password, and password confirmation.")
                     elif create_password != confirm_password:
@@ -375,6 +400,7 @@ elif page == "Customer Portal":
                 login_email = st.text_input("Email Address")
                 login_password = st.text_input("Password", type="password")
                 if st.form_submit_button("Login"):
+                    login_email = login_email.strip().lower()
                     if login_email in st.session_state['registered_customers']:
                         customer = st.session_state['registered_customers'][login_email]
                         if login_password == customer['password']:
@@ -400,6 +426,10 @@ elif page == "Customer Portal":
 
         with tab1:
             st.subheader("Request Fumigation")
+            current_customer = st.session_state['registered_customers'].get(
+                st.session_state['customer_email'], {}
+            )
+            saved_location = current_customer.get('home_address', '').strip() or "Address not provided"
             
             # Debug section outside the form
             if st.checkbox("Show Network Debug Info"):
@@ -480,13 +510,16 @@ elif page == "Customer Portal":
             
             with st.form("req_form"):
                 p_type = st.selectbox("Pest Type", ["Cockroaches", "Termites", "Rodents", "Mosquitoes", "Other"])
-                location = st.text_input("Service Location", placeholder="Enter your address or location")
                 desc = st.text_area("Description of the Pest Problem")
                 if st.form_submit_button("Submit Request"):
                     if not st.session_state['wallet_address']:
                         st.error("Please connect your MetaMask wallet first.")
-                    elif not location.strip():
-                        st.error("Please enter a service location.")
+                    elif any(
+                        email != st.session_state['customer_email']
+                        and customer.get('wallet_address', '').lower() == st.session_state['wallet_address'].lower()
+                        for email, customer in st.session_state['registered_customers'].items()
+                    ):
+                        st.error("This wallet is already linked to another customer account.")
                     else:
                         # Check if MetaMask is still available and connected
                         metamask_available = streamlit_js_eval(
@@ -507,7 +540,7 @@ elif page == "Customer Portal":
                                 # Build transaction data
                                 try:
                                     # Get the function signature
-                                    create_request_func = contract.functions.createRequest(p_type, location)
+                                    create_request_func = contract.functions.createRequest(p_type, saved_location)
                                     
                                     # Build the transaction using Web3 v7 syntax
                                     tx = create_request_func.build_transaction({
@@ -544,6 +577,7 @@ elif page == "Customer Portal":
                                     tx_result = streamlit_js_eval(js_expressions=js_code, key=f"send_tx_{st.session_state['wallet_address']}")
                                     
                                     if tx_result:
+                                        current_customer['wallet_address'] = st.session_state['wallet_address']
                                         st.success(f"✅ Service request submitted successfully! Transaction: {tx_result[:10]}...")
                                         st.info("Your request has been recorded on the blockchain. You can track its status in the 'Track Service' tab.")
                                         st.experimental_rerun()
@@ -556,13 +590,24 @@ elif page == "Customer Portal":
 
         with tab2:
             st.subheader("Track Your Service")
-            if st.session_state['wallet_address']:
+            current_customer = st.session_state['registered_customers'].get(
+                st.session_state['customer_email'], {}
+            )
+            customer_wallet = current_customer.get('wallet_address')
+
+            if not customer_wallet:
+                st.info("No service requests found for your customer account yet.")
+            elif not st.session_state['wallet_address']:
+                st.warning("Please connect your wallet to track your services.")
+            elif customer_wallet.lower() != st.session_state['wallet_address'].lower():
+                st.warning("Please connect the wallet linked to this customer account to track your services.")
+            else:
                 try:
                     total_req = contract.functions.requestCount().call()
                     customer_requests = []
                     for i in range(1, total_req + 1):
                         data = contract.functions.requests(i).call()
-                        if data[1].lower() == st.session_state['wallet_address'].lower():
+                        if data[1].lower() == customer_wallet.lower():
                             customer_requests.append((i, data))
 
                     if customer_requests:
@@ -575,8 +620,6 @@ elif page == "Customer Portal":
                         st.info("No service requests found for your account.")
                 except Exception as e:
                     st.error(f"Failed to load service status: {str(e)}")
-            else:
-                st.warning("Please connect your wallet to track your services.")
 
 elif page == "Service Provider":
 
@@ -808,6 +851,34 @@ elif page == "Service Provider":
 
 elif page == "Admin Panel":
     st.header("System Governance")
+    allowed_admin_users = {"danel", "omphile", "malwande", "azwindini", "samkelisiwe", "rose"}
+
+    if not st.session_state['admin_logged_in']:
+        st.subheader("Admin Login")
+        with st.form("admin_login_form"):
+            admin_username = st.text_input("Username")
+            admin_password = st.text_input("Password", type="password")
+
+            if st.form_submit_button("Login"):
+                normalized_username = admin_username.strip().lower()
+                normalized_password = admin_password.strip().lower()
+
+                if normalized_username in allowed_admin_users and normalized_password == "radoms69":
+                    st.session_state['admin_logged_in'] = True
+                    st.session_state['admin_username'] = admin_username.strip().title()
+                    st.success(f"Welcome, {st.session_state['admin_username']}.")
+                    st.rerun()
+                else:
+                    st.error("Invalid admin username or password.")
+
+        st.stop()
+
+    st.success(f"Logged in as admin: {st.session_state['admin_username']}")
+    if st.button("Logout", key="admin_logout"):
+        st.session_state['admin_logged_in'] = False
+        st.session_state['admin_username'] = ''
+        st.rerun()
+
     st.write("Use this section to verify SMEs and manage supply chain coordination.")
     
     st.divider()
