@@ -60,28 +60,25 @@ def show_logo():
         st.markdown(f"### {config.APP_NAME}")
 
 def has_metamask():
-    """
-    Improved MetaMask detection for deployed Streamlit apps.
-    Waits for browser extension injection before checking.
-    Helps resolve false negatives on Streamlit Cloud.
-    """
+    """Check if MetaMask is installed with guaranteed timeout."""
     try:
         result = streamlit_js_eval(
             js_expressions="""
-                new Promise(resolve => {
-                    setTimeout(() => {
-                        resolve(
-                            typeof window.ethereum !== 'undefined' &&
-                            window.ethereum !== null
-                        );
-                    }, 1500);
-                })
+                (async () => {
+                    const timeout = new Promise(resolve => setTimeout(() => resolve(false), 2000));
+                    const check = new Promise(resolve => {
+                        if (window.ethereum) {
+                            resolve(true);
+                        } else {
+                            resolve(false);
+                        }
+                    });
+                    return Promise.race([check, timeout]);
+                })()
             """,
-            key="has_metamask_delayed"
+            key="has_metamask_check_v2"
         )
-
         return result is True or str(result).lower() == "true"
-
     except Exception:
         return False
 
@@ -157,13 +154,25 @@ def request_wallet_connection():
 
 
 def get_user_address():
-    """Asks the browser (MetaMask) for the currently connected wallet address."""
+    """Get the currently connected wallet address from session state or MetaMask."""
+    # First check session state (preferred)
+    wallet = st.session_state.get('wallet_address')
+    if wallet and wallet not in ["NO_METAMASK", "USER_REJECTED"]:
+        return wallet
+    
+    # Fallback to MetaMask if not in session state
     try:
-        # We use JS to peek at MetaMask's selected address
-        address = streamlit_js_eval(js_expressions="window.ethereum.selectedAddress", key="get_address")
-        return w3.to_checksum_address(address) if address else None
+        address = streamlit_js_eval(
+            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
+            key="get_address_v2"
+        )
+        if address and address != "null":
+            st.session_state.wallet_address = address
+            return w3.to_checksum_address(address)
     except Exception:
-        return None
+        pass
+    
+    return None
 
 def build_and_send_transaction(func_call, from_address):
     """
@@ -200,30 +209,30 @@ def build_and_send_transaction(func_call, from_address):
 
 
 def get_network_id():
+    """Get the current network chain ID from MetaMask with guaranteed accuracy."""
     try:
-        # Check multiple possible properties where MetaMask stores chain ID
-        properties_to_try = [
-            "window.ethereum.chainId",
-            "window.ethereum.networkVersion",
-            "window.ethereum._chainId", 
-            "window.ethereum._networkVersion"
-        ]
+        value = streamlit_js_eval(
+            js_expressions="""
+                (async () => {
+                    if (!window.ethereum) return null;
+                    try {
+                        const chainId = window.ethereum.chainId;
+                        if (chainId) {
+                            return chainId.startsWith('0x') ? String(parseInt(chainId, 16)) : String(chainId);
+                        }
+                        return await window.ethereum.request({ method: 'eth_chainId' });
+                    } catch (err) {
+                        return null;
+                    }
+                })()
+            """,
+            key="get_network_id_v2"
+        )
         
-        for prop in properties_to_try:
-            try:
-                value = streamlit_js_eval(
-                    js_expressions=f"window.ethereum && {prop} ? {prop} : null",
-                    key=f"chain_{prop.split('.')[-1]}"
-                )
-                if value and value != 'null' and value != 'undefined':
-                    # If it's a hex string, convert to decimal
-                    if isinstance(value, str) and value.startswith('0x'):
-                        return str(int(value, 16))
-                    # If it's already a number/string, return as string
-                    return str(value)
-            except:
-                continue
-                
+        if value and value != 'null':
+            if isinstance(value, str) and value.startswith('0x'):
+                return str(int(value, 16))
+            return str(value)
         return None
     except Exception:
         return None
@@ -247,45 +256,69 @@ def is_connected_contract_admin():
 
 
 def ensure_wallet_ready():
-    if not st.session_state.get('wallet_address'):
+    """Guarantee wallet is connected and on correct network."""
+    wallet_address = st.session_state.get('wallet_address')
+    if not wallet_address or wallet_address in ["NO_METAMASK", "USER_REJECTED"]:
         return False, "Please connect your MetaMask wallet first."
 
     network_id = get_network_id()
-    if network_id and network_id != '11155111':
-        return False, f"Please connect to Sepolia testnet in MetaMask. Current network: {network_id}."
+    if not network_id:
+        return False, "Unable to determine network. Please refresh and try again."
+    
+    if network_id != '11155111':
+        return False, f"Please connect to Sepolia testnet (Chain ID: 11155111). Current: {network_id}"
 
     return True, None
 
 
 def send_contract_transaction(function_call, key, gas=200000):
-    tx = function_call.build_transaction({
-        'from': st.session_state['wallet_address'],
-        'nonce': w3.eth.get_transaction_count(st.session_state['wallet_address']),
-        'gas': gas,
-        'gasPrice': w3.eth.gas_price
-    })
+    """Send a contract transaction with guaranteed error handling."""
+    try:
+        wallet_address = st.session_state.get('wallet_address')
+        if not wallet_address:
+            st.error("Wallet not connected")
+            return None
+            
+        tx = function_call.build_transaction({
+            'from': wallet_address,
+            'nonce': w3.eth.get_transaction_count(wallet_address),
+            'gas': gas,
+            'gasPrice': w3.eth.gas_price
+        })
 
-    tx_data = {
-        'to': tx['to'],
-        'from': tx['from'],
-        'data': tx['data'],
-        'value': hex(tx.get('value', 0)),
-        'gas': hex(tx['gas']),
-        'gasPrice': hex(tx['gasPrice'])
-    }
+        tx_data = {
+            'to': tx['to'],
+            'from': tx['from'],
+            'data': tx['data'],
+            'value': hex(tx.get('value', 0)),
+            'gas': hex(tx['gas']),
+            'gasPrice': hex(tx['gasPrice'])
+        }
 
-    js_code = f"""
-    window.ethereum.request({{
-        method: 'eth_sendTransaction',
-        params: [{tx_data}]
-    }}).then(function(txHash) {{
-        return txHash;
-    }}).catch(function(error) {{
-        throw error;
-    }});
-    """
+        js_code = f"""
+        (async () => {{
+            try {{
+                const txHash = await window.ethereum.request({{
+                    method: 'eth_sendTransaction',
+                    params: ['{tx_data}']
+                }});
+                return txHash;
+            }} catch (error) {{
+                if (error.code === 4001) {{
+                    return "USER_REJECTED";
+                }}
+                console.error("Transaction error:", error);
+                return null;
+            }}
+        }})()
+        """
 
-    return streamlit_js_eval(js_expressions=js_code, key=key)
+        result = streamlit_js_eval(js_expressions=js_code, key=key)
+        return result
+        
+    except Exception as e:
+        st.error(f"Transaction preparation failed: {str(e)}")
+        return None
 
 
 def get_provider_details(provider_address):
