@@ -1164,4 +1164,3 @@ elif page == "Admin Panel":
                     st.info(f"Notes: {assignment_notes if assignment_notes else 'No notes provided.'}")
                 else:
                     st.error("Please select a service provider to assign the job.")
-Metamask Wallet Not Connecting in Streamlit App? - Manus
