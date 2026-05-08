@@ -86,37 +86,31 @@ def has_metamask():
         return False
 
 def request_wallet_connection():
+    """Injects JavaScript to request MetaMask connection and retrieves the wallet address."""
     try:
         result = streamlit_js_eval(
             js_expressions="""
-                new Promise(async (resolve) => {
-                    if (!window.ethereum) {
-                        resolve(null);
-                        return;
+                (async () => {
+                    if (window.ethereum) {
+                        try {
+                            const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                            return accounts.length > 0 ? accounts[0] : null;
+                        } catch (err) {
+                            console.error(err);
+                            return null;
+                        }
+                    } else {
+                        return "NO_METAMASK";
                     }
-
-                    try {
-                        const accounts = await window.ethereum.request({
-                            method: 'eth_requestAccounts'
-                        });
-
-                        resolve(accounts);
-                    } catch (error) {
-                        console.error(error);
-                        resolve(null);
-                    }
-                });
+                })()
             """,
             key="connect_wallet"
         )
 
-        if isinstance(result, list) and result:
-            return result[0]
+        return result
 
     except Exception:
         return None
-
-    return None
 
 
 def get_user_address():
