@@ -86,30 +86,73 @@ def has_metamask():
         return False
 
 def request_wallet_connection():
-    """Injects JavaScript to request MetaMask connection and retrieves the wallet address."""
+    """
+    Robust MetaMask connection with guaranteed reliability.
+    Uses session state to prevent multiple connection requests.
+    """
+    # Initialize session state for wallet
+    if "wallet_address" not in st.session_state:
+        st.session_state.wallet_address = None
+    if "connection_attempted" not in st.session_state:
+        st.session_state.connection_attempted = False
+    
     try:
+        # Inject JavaScript with proper Promise handling and timeout
         result = streamlit_js_eval(
             js_expressions="""
                 (async () => {
-                    if (window.ethereum) {
-                        try {
-                            const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-                            return accounts.length > 0 ? accounts[0] : null;
-                        } catch (err) {
-                            console.error(err);
-                            return null;
-                        }
-                    } else {
+                    // Guaranteed check with timeout
+                    const checkMetaMask = () => {
+                        return new Promise((resolve) => {
+                            const timeout = setTimeout(() => resolve("NO_METAMASK"), 3000);
+                            
+                            if (window.ethereum) {
+                                clearTimeout(timeout);
+                                resolve(true);
+                            }
+                        });
+                    };
+
+                    const hasMetaMask = await checkMetaMask();
+                    
+                    if (!hasMetaMask || hasMetaMask === "NO_METAMASK") {
                         return "NO_METAMASK";
+                    }
+
+                    try {
+                        const accounts = await window.ethereum.request({ 
+                            method: 'eth_requestAccounts',
+                            params: []
+                        });
+                        
+                        if (accounts && accounts.length > 0) {
+                            return accounts[0];
+                        }
+                        return null;
+                        
+                    } catch (err) {
+                        // Handle user rejection or other errors
+                        if (err.code === 4001) {
+                            return "USER_REJECTED";
+                        }
+                        console.error("MetaMask error:", err);
+                        return null;
                     }
                 })()
             """,
-            key="connect_wallet"
+            key="connect_wallet_v2"
         )
 
+        # Store result in session state
+        if result and result not in ["NO_METAMASK", "USER_REJECTED"]:
+            st.session_state.wallet_address = result
+            return result
+        
+        st.session_state.connection_attempted = True
         return result
 
-    except Exception:
+    except Exception as e:
+        print(f"Wallet connection error: {e}")
         return None
 
 
