@@ -88,13 +88,34 @@ def has_metamask():
 def request_wallet_connection():
     try:
         result = streamlit_js_eval(
-            js_expressions="window.ethereum.request({ method: 'eth_requestAccounts' })",
+            js_expressions="""
+                new Promise(async (resolve) => {
+                    if (!window.ethereum) {
+                        resolve(null);
+                        return;
+                    }
+
+                    try {
+                        const accounts = await window.ethereum.request({
+                            method: 'eth_requestAccounts'
+                        });
+
+                        resolve(accounts);
+                    } catch (error) {
+                        console.error(error);
+                        resolve(null);
+                    }
+                });
+            """,
             key="connect_wallet"
         )
+
         if isinstance(result, list) and result:
             return result[0]
+
     except Exception:
-        pass
+        return None
+
     return None
 
 
