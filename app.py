@@ -69,45 +69,32 @@ def has_metamask():
         result = streamlit_js_eval(
             js_expressions="""
                 new Promise(resolve => {
-                    // Check immediately and every 200ms for up to 3 seconds
-                    let attempts = 0;
-                    const checkInterval = setInterval(() => {
-                        if (typeof window.ethereum !== 'undefined' && window.ethereum !== null) {
-                            clearInterval(checkInterval);
-                            resolve(true);
-                        } else if (attempts++ > 15) {
-                            clearInterval(checkInterval);
-                            resolve(false);
-                        }
-                    }, 200);
+                    setTimeout(() => {
+                        resolve(
+                            typeof window.ethereum !== 'undefined' &&
+                            window.ethereum !== null
+                        );
+                    }, 1500);
                 })
             """,
-            key=f"has_metamask_{st.session_state.get('_page_load_count', 0)}"
+            key="has_metamask_delayed"
         )
 
         return result is True or str(result).lower() == "true"
 
-    except Exception as e:
-        st.error(f"MetaMask detection error: {str(e)}", icon="❌")
+    except Exception:
         return False
 
 def request_wallet_connection():
     try:
         result = streamlit_js_eval(
-            js_expressions="""
-                window.ethereum.request({ method: 'eth_requestAccounts' })
-                    .then(accounts => accounts && accounts[0] ? accounts[0] : null)
-                    .catch(error => {
-                        console.error('MetaMask connection error:', error);
-                        return null;
-                    })
-            """,
-            key=f"connect_wallet_{st.session_state.get('_wallet_connect_count', 0)}"
+            js_expressions="window.ethereum.request({ method: 'eth_requestAccounts' })",
+            key="connect_wallet"
         )
-        if result and isinstance(result, str):
-            return result
-    except Exception as e:
-        st.warning(f"Connection request failed: {str(e)}", icon="⚠️")
+        if isinstance(result, list) and result:
+            return result[0]
+    except Exception:
+        pass
     return None
 
 
@@ -115,13 +102,8 @@ def get_user_address():
     """Ask the browser for the currently connected wallet address."""
     try:
         address = streamlit_js_eval(
-            js_expressions="""
-                (function() {
-                    if (typeof window.ethereum === 'undefined') return null;
-                    return window.ethereum.selectedAddress || null;
-                })()
-            """,
-            key=f"get_address_{st.session_state.get('_address_check_count', 0)}"
+            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
+            key="get_address"
         )
         return w3.to_checksum_address(address) if address else None
     except Exception:
@@ -130,25 +112,31 @@ def get_user_address():
 
 def get_network_id():
     try:
-        value = streamlit_js_eval(
-            js_expressions="""
-                (function() {
-                    if (typeof window.ethereum === 'undefined') return null;
-                    let chainId = window.ethereum.chainId;
-                    if (!chainId) return null;
-                    if (typeof chainId === 'string' && chainId.startsWith('0x')) {
-                        return String(parseInt(chainId, 16));
-                    }
-                    return String(chainId);
-                })()
-            """,
-            key=f"get_network_{st.session_state.get('_network_check_count', 0)}"
-        )
-        if value and value != 'null' and value != 'undefined':
-            return str(value)
+        # Check multiple possible properties where MetaMask stores chain ID
+        properties_to_try = [
+            "window.ethereum.chainId",
+            "window.ethereum.networkVersion",
+            "window.ethereum._chainId", 
+            "window.ethereum._networkVersion"
+        ]
+        
+        for prop in properties_to_try:
+            try:
+                value = streamlit_js_eval(
+                    js_expressions=f"window.ethereum && {prop} ? {prop} : null",
+                    key=f"chain_{prop.split('.')[-1]}"
+                )
+                if value and value != 'null' and value != 'undefined':
+                    # If it's a hex string, convert to decimal
+                    if isinstance(value, str) and value.startswith('0x'):
+                        return str(int(value, 16))
+                    # If it's already a number/string, return as string
+                    return str(value)
+            except:
+                continue
+                
         return None
-    except Exception as e:
-        st.error(f"Network detection error: {str(e)}", icon="❌")
+    except Exception:
         return None
 
 
@@ -289,22 +277,10 @@ def remember_customer_request(customer_email, pest_type, description, location, 
 if 'wallet_address' not in st.session_state:
     st.session_state['wallet_address'] = None
 
-# Counters for unique streamlit_js_eval keys (prevents caching issues on Streamlit Cloud)
-if '_page_load_count' not in st.session_state:
-    st.session_state['_page_load_count'] = 0
-if '_wallet_connect_count' not in st.session_state:
-    st.session_state['_wallet_connect_count'] = 0
-if '_address_check_count' not in st.session_state:
-    st.session_state['_address_check_count'] = 0
-if '_network_check_count' not in st.session_state:
-    st.session_state['_network_check_count'] = 0
-
-# Don't auto-detect wallet on page load in Streamlit Cloud - let users click the button explicitly
-# This avoids timing issues and improves reliability
-# if st.session_state['wallet_address'] is None and has_metamask():
-#     detected_address = get_user_address()
-#     if detected_address:
-#         st.session_state['wallet_address'] = detected_address
+if st.session_state['wallet_address'] is None and has_metamask():
+    detected_address = get_user_address()
+    if detected_address:
+        st.session_state['wallet_address'] = detected_address
 
 if 'customer_portal_step' not in st.session_state:
     st.session_state['customer_portal_step'] = 'login'
@@ -362,25 +338,17 @@ with st.sidebar:
         if network_id:
             network_name = "Sepolia" if network_id == '11155111' else f"Chain ID: {network_id}"
             st.info(f"Connected network: {network_name}")
-        if st.button("🔄 Disconnect Wallet"):
-            st.session_state['wallet_address'] = None
-            st.rerun()
     else:
-        st.warning("⚠️ MetaMask wallet not connected")
-        if st.button("🦊 Connect MetaMask", use_container_width=True):
+        if st.button("Connect MetaMask"):
             if not has_metamask():
-                st.error("❌ MetaMask is not available in this browser. Please install the MetaMask extension.")
+                st.error("MetaMask is not available in this browser.")
             else:
-                with st.spinner("Waiting for MetaMask approval..."):
-                    user_wallet = request_wallet_connection()
-                    if user_wallet:
-                        st.session_state['wallet_address'] = w3.to_checksum_address(user_wallet)
-                        st.session_state['_wallet_connect_count'] += 1
-                        st.session_state['_address_check_count'] += 1
-                        st.session_state['_network_check_count'] += 1
-                        st.rerun()
-                    else:
-                        st.error("❌ Connection failed. Please ensure:\n- MetaMask is installed and unlocked\n- You approved the connection request\n- You're on the correct network")
+                user_wallet = request_wallet_connection()
+                if user_wallet:
+                    st.session_state['wallet_address'] = w3.to_checksum_address(user_wallet)
+                    st.experimental_rerun()
+                else:
+                    st.error("Unable to connect MetaMask. Please ensure MetaMask is installed, unlocked, and that you approved the connection request.")
     
     st.divider()
     page = st.radio("Access Level", ["Live Dashboard", "Company Profile", "Customer Portal", "Service Provider", "Supply Chain", "Admin Panel"])
