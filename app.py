@@ -120,15 +120,46 @@ def request_wallet_connection():
 
 
 def get_user_address():
-    """Ask the browser for the currently connected wallet address."""
+    """Asks the browser (MetaMask) for the currently connected wallet address."""
     try:
-        address = streamlit_js_eval(
-            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
-            key="get_address"
-        )
+        # We use JS to peek at MetaMask's selected address
+        address = streamlit_js_eval(js_expressions="window.ethereum.selectedAddress", key="get_address")
         return w3.to_checksum_address(address) if address else None
     except Exception:
         return None
+
+def build_and_send_transaction(func_call, from_address):
+    """
+    Prepares a transaction in Python, then passes it to the browser 
+    so MetaMask can prompt the user to sign it safely.
+    """
+    try:
+        # Build the raw transaction details
+        tx_data = func_call.build_transaction({
+            'from': from_address,
+            'nonce': w3.eth.get_transaction_count(from_address),
+        })
+        
+        # Inject JavaScript to request MetaMask to send the transaction
+        js_code = f"""
+        window.ethereum.request({{
+            method: 'eth_sendTransaction',
+            params: [{{
+                from: '{from_address}',
+                to: '{tx_data["to"]}',
+                data: '{tx_data["data"]}',
+            }}]
+        }})
+        """
+        # Execute the JS. In a production environment, you'd capture the promise result.
+        tx_hash = streamlit_js_eval(js_expressions=js_code, key=f"tx_{tx_data['nonce']}")
+        
+        if tx_hash:
+            st.success("Transaction submitted to the network!")
+            st.markdown(f"[View on Etherscan](https://sepolia.etherscan.io/tx/{tx_hash})")
+            
+    except Exception as e:
+        st.error("Failed to prepare transaction. Please check your inputs.")
 
 
 def get_network_id():
