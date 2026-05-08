@@ -1,4 +1,5 @@
 # pip install streamlit web3 streamlit-js-eval
+# Wallet Providers: MetaMask (browser extension) + WalletConnect v2 (via CDN)
 
 import streamlit as st
 import os
@@ -60,7 +61,7 @@ def show_logo():
         st.markdown(f"### {config.APP_NAME}")
 
 def has_metamask():
-    """Check if MetaMask is installed with guaranteed timeout."""
+    """Check if MetaMask is installed. WalletConnect is available as fallback."""
     try:
         result = streamlit_js_eval(
             js_expressions="""
@@ -76,103 +77,236 @@ def has_metamask():
                     return Promise.race([check, timeout]);
                 })()
             """,
-            key="has_metamask_check_v2"
+            key="has_metamask_check_v3"
         )
         return result is True or str(result).lower() == "true"
     except Exception:
         return False
 
+def has_wallet_provider():
+    """Check if any wallet provider is available (MetaMask or WalletConnect)."""
+    # MetaMask check
+    if has_metamask():
+        return True
+    
+    # WalletConnect is always available via CDN
+    return True
+
 def request_wallet_connection():
     """
-    Robust MetaMask connection with guaranteed reliability.
-    Uses session state to prevent multiple connection requests.
+    Robust wallet connection with MetaMask + WalletConnect fallback.
+    Tries MetaMask first, then falls back to WalletConnect for better compatibility.
     """
-    # Initialize session state for wallet
+    # Initialize session state
     if "wallet_address" not in st.session_state:
         st.session_state.wallet_address = None
+    if "wallet_provider" not in st.session_state:
+        st.session_state.wallet_provider = None
     if "connection_attempted" not in st.session_state:
         st.session_state.connection_attempted = False
     
     try:
-        # Inject JavaScript with proper Promise handling and timeout
+        # Inject JavaScript with MetaMask first, then WalletConnect fallback
         result = streamlit_js_eval(
             js_expressions="""
                 (async () => {
-                    // Guaranteed check with timeout
-                    const checkMetaMask = () => {
+                    // Step 1: Try MetaMask
+                    const tryMetaMask = async () => {
                         return new Promise((resolve) => {
-                            const timeout = setTimeout(() => resolve("NO_METAMASK"), 3000);
+                            const timeout = setTimeout(() => resolve(null), 2000);
                             
                             if (window.ethereum) {
                                 clearTimeout(timeout);
-                                resolve(true);
+                                try {
+                                    window.ethereum.request({ 
+                                        method: 'eth_requestAccounts',
+                                        params: []
+                                    }).then(accounts => {
+                                        if (accounts && accounts.length > 0) {
+                                            resolve({ address: accounts[0], provider: 'metamask' });
+                                        } else {
+                                            resolve(null);
+                                        }
+                                    }).catch(err => {
+                                        if (err.code === 4001) {
+                                            resolve({ error: 'USER_REJECTED', provider: 'metamask' });
+                                        } else {
+                                            resolve(null);
+                                        }
+                                    });
+                                } catch (err) {
+                                    resolve(null);
+                                }
+                            } else {
+                                resolve(null);
                             }
                         });
                     };
 
-                    const hasMetaMask = await checkMetaMask();
-                    
-                    if (!hasMetaMask || hasMetaMask === "NO_METAMASK") {
-                        return "NO_METAMASK";
+                    // Step 2: WalletConnect as fallback
+                    const tryWalletConnect = async () => {
+                        try {
+                            // Load WalletConnect v2 EthereumProvider dynamically
+                            if (!window.WalletConnectEthereumProvider) {
+                                const script = document.createElement('script');
+                                script.src = 'https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.13.0/dist/index.umd.js';
+                                script.async = true;
+                                await new Promise((resolve, reject) => {
+                                    script.onload = resolve;
+                                    script.onerror = reject;
+                                    document.head.appendChild(script);
+                                });
+                            }
+
+                            const provider = await window.WalletConnectEthereumProvider.EthereumProvider.init({
+                                projectId: '3899c33f52e2f3c79e5fd7b2e8b8e9a0', // Fallback public ID
+                                chains: [1, 11155111], // Mainnet, Sepolia
+                                showQrModal: true,
+                                metadata: {
+                                    name: 'Service App',
+                                    description: 'Connect with WalletConnect',
+                                    url: window.location.origin,
+                                    icons: ['https://avatars.githubusercontent.com/u/37784886']
+                                }
+                            });
+
+                            const accounts = await provider.enable();
+                            if (accounts && accounts.length > 0) {
+                                return { address: accounts[0], provider: 'walletconnect' };
+                            }
+                            return null;
+                        } catch (err) {
+                            if (err.code === 4001) {
+                                return { error: 'USER_REJECTED', provider: 'walletconnect' };
+                            }
+                            console.warn('WalletConnect error:', err.message);
+                            return null;
+                        }
+                    };
+
+                    // Try MetaMask first
+                    const metamaskResult = await tryMetaMask();
+                    if (metamaskResult) {
+                        return metamaskResult;
                     }
 
-                    try {
-                        const accounts = await window.ethereum.request({ 
-                            method: 'eth_requestAccounts',
-                            params: []
-                        });
-                        
-                        if (accounts && accounts.length > 0) {
-                            return accounts[0];
-                        }
-                        return null;
-                        
-                    } catch (err) {
-                        // Handle user rejection or other errors
-                        if (err.code === 4001) {
-                            return "USER_REJECTED";
-                        }
-                        console.error("MetaMask error:", err);
-                        return null;
+                    // Fallback to WalletConnect
+                    const walletConnectResult = await tryWalletConnect();
+                    if (walletConnectResult) {
+                        return walletConnectResult;
                     }
+
+                    return { error: 'NO_WALLET', provider: 'none' };
                 })()
             """,
-            key="connect_wallet_v2"
+            key="connect_wallet_hybrid"
         )
 
-        # Store result in session state
-        if result and result not in ["NO_METAMASK", "USER_REJECTED"]:
-            st.session_state.wallet_address = result
-            return result
+        # Process result
+        if isinstance(result, dict):
+            if 'address' in result:
+                st.session_state.wallet_address = result['address']
+                st.session_state.wallet_provider = result.get('provider', 'unknown')
+                return result['address']
+            elif 'error' in result:
+                st.session_state.connection_attempted = True
+                return result['error']
         
         st.session_state.connection_attempted = True
-        return result
+        return result if result else "NO_WALLET"
 
     except Exception as e:
         print(f"Wallet connection error: {e}")
+        st.session_state.connection_attempted = True
         return None
 
 
 def get_user_address():
-    """Get the currently connected wallet address from session state or MetaMask."""
+    """Get the currently connected wallet address from session state or provider."""
     # First check session state (preferred)
     wallet = st.session_state.get('wallet_address')
-    if wallet and wallet not in ["NO_METAMASK", "USER_REJECTED"]:
+    if wallet and wallet not in ["NO_WALLET", "NO_METAMASK", "USER_REJECTED"]:
         return wallet
     
-    # Fallback to MetaMask if not in session state
+    # Fallback to checking provider
     try:
-        address = streamlit_js_eval(
-            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
-            key="get_address_v2"
+        result = streamlit_js_eval(
+            js_expressions="""
+                (async () => {
+                    // Check MetaMask first
+                    if (window.ethereum && window.ethereum.selectedAddress) {
+                        return { address: window.ethereum.selectedAddress, provider: 'metamask' };
+                    }
+                    
+                    // Try to get accounts from provider
+                    if (window.ethereum) {
+                        try {
+                            const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+                            if (accounts && accounts.length > 0) {
+                                return { address: accounts[0], provider: 'metamask' };
+                            }
+                        } catch (err) {
+                            // Continue
+                        }
+                    }
+                    
+                    return null;
+                })()
+            """,
+            key="get_address_hybrid"
         )
-        if address and address != "null":
+        
+        if isinstance(result, dict) and result.get('address'):
+            address = result['address']
             st.session_state.wallet_address = address
-            return w3.to_checksum_address(address)
+            st.session_state.wallet_provider = result.get('provider', 'unknown')
+            return w3.to_checksum_address(address) if address != "null" else None
     except Exception:
         pass
     
     return None
+
+def get_wallet_provider():
+    """Get the currently used wallet provider (metamask or walletconnect)."""
+    return st.session_state.get('wallet_provider', 'unknown')
+
+def display_wallet_status():
+    """Display current wallet connection status in the UI."""
+    wallet_address = st.session_state.get('wallet_address')
+    wallet_provider = st.session_state.get('wallet_provider', 'unknown')
+    
+    if wallet_address and wallet_address not in ["NO_WALLET", "NO_METAMASK", "USER_REJECTED"]:
+        # Format address for display
+        short_address = f"{wallet_address[:6]}...{wallet_address[-4:]}"
+        provider_emoji = "🦊" if wallet_provider == "metamask" else "💼"
+        st.success(f"{provider_emoji} Connected: {short_address} ({wallet_provider})")
+        return True
+    else:
+        st.warning("Wallet not connected. Click 'Connect Wallet' to proceed.")
+        return False
+
+def initialize_wallet_connection():
+    """Initialize wallet connection with button UI."""
+    col1, col2 = st.columns([3, 1])
+    
+    with col2:
+        if st.button("🔌 Connect Wallet", use_container_width=True):
+            with st.spinner("Connecting wallet..."):
+                result = request_wallet_connection()
+                
+                if result and result not in ["NO_WALLET", "NO_METAMASK", "USER_REJECTED"]:
+                    st.success(f"Connected: {result[:10]}...")
+                    st.rerun()
+                elif result == "USER_REJECTED":
+                    st.error("Connection rejected. Please try again.")
+                elif result == "NO_WALLET":
+                    st.error("No wallet detected. Please install MetaMask or use WalletConnect.")
+                else:
+                    st.error(f"Connection failed: {result}")
+    
+    # Display status
+    with col1:
+        display_wallet_status()
 
 def build_and_send_transaction(func_call, from_address):
     """
@@ -256,10 +390,10 @@ def is_connected_contract_admin():
 
 
 def ensure_wallet_ready():
-    """Guarantee wallet is connected and on correct network."""
+    """Guarantee wallet is connected (MetaMask or WalletConnect) and on correct network."""
     wallet_address = st.session_state.get('wallet_address')
-    if not wallet_address or wallet_address in ["NO_METAMASK", "USER_REJECTED"]:
-        return False, "Please connect your MetaMask wallet first."
+    if not wallet_address or wallet_address in ["NO_WALLET", "NO_METAMASK", "USER_REJECTED"]:
+        return False, "Please connect your wallet (MetaMask or WalletConnect)."
 
     network_id = get_network_id()
     if not network_id:
