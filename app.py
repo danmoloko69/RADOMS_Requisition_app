@@ -1,11 +1,10 @@
-# pip install streamlit web3 streamlit-js-eval st-wallet
+# pip install streamlit web3 streamlit-js-eval
 
 import streamlit as st
 import os
 from pathlib import Path
 from web3 import Web3
 from streamlit_js_eval import streamlit_js_eval
-from st_wallet import st_wallet
 import config
 
 # --- THEME CUSTOMIZATION (Light Green & White) ---
@@ -42,10 +41,10 @@ st.markdown("""
 w3 = Web3(Web3.HTTPProvider(config.SEPOLIA_RPC_URL))
 contract_address = w3.to_checksum_address(config.CONTRACT_ADDRESS)
 contract = w3.eth.contract(address=contract_address, abi=config.CONTRACT_ABI)
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 APP_DIR = Path(__file__).resolve().parent
-ETHEREUM_PROVIDER_JS = "(function() { try { return window.ethereum || (window.parent && window.parent.ethereum) || (window.top && window.top.ethereum); } catch (e) { return window.ethereum; } })()"
 
 
 def resolve_asset_path(path: str) -> Path:
@@ -61,143 +60,31 @@ def show_logo():
         st.markdown(f"### {config.APP_NAME}")
 
 def has_metamask():
-    """
-    Improved MetaMask detection for deployed Streamlit apps.
-    Waits for browser extension injection before checking.
-    Helps resolve false negatives on Streamlit Cloud.
-    """
     try:
-        result = streamlit_js_eval(
-            js_expressions=f"""
-                new Promise(resolve => {{
-                    setTimeout(() => {{
-                        const ethereum = {ETHEREUM_PROVIDER_JS};
-                        resolve(typeof ethereum !== 'undefined' && ethereum !== null);
-                    }}, 1500);
-                }})
-            """,
-            key="has_metamask_delayed"
-        )
-
+        result = streamlit_js_eval(js_expressions="typeof window.ethereum !== 'undefined'", key="has_metamask")
         return result is True or str(result).lower() == "true"
-
     except Exception:
         return False
 
 
-def normalize_wallet_address(wallet_result):
-    """Return a checksum address from MetaMask's response shape."""
-    if isinstance(wallet_result, dict):
-        wallet_result = wallet_result.get("address") or wallet_result.get("account")
-
-    if isinstance(wallet_result, (list, tuple)):
-        wallet_result = wallet_result[0] if wallet_result else None
-
-    if not wallet_result:
-        return None
-
-    try:
-        return w3.to_checksum_address(wallet_result)
-    except Exception:
-        return None
-
-
-def request_wallet_connection(key="connect_wallet"):
-    """
-    Requests MetaMask wallet access using proper async browser execution.
-    More reliable for deployed Streamlit apps.
-    """
+def request_wallet_connection():
     try:
         result = streamlit_js_eval(
-            js_expressions=f"""
-                new Promise(async (resolve) => {{
-                    const ethereum = {ETHEREUM_PROVIDER_JS};
-
-                    if (typeof ethereum === 'undefined' || ethereum === null) {{
-                        resolve({{ ok: false, reason: 'no_metamask' }});
-                        return;
-                    }}
-
-                    try {{
-                        const accounts = await ethereum.request({{
-                            method: 'eth_requestAccounts'
-                        }});
-
-                        resolve({{ ok: true, address: accounts && accounts.length ? accounts[0] : null }});
-                    }} catch (err) {{
-                        console.error(err);
-                        resolve({{ ok: false, reason: err && err.message ? err.message : 'request_rejected' }});
-                    }}
-                }});
-            """,
-            key=key
+            js_expressions="window.ethereum.request({ method: 'eth_requestAccounts' })",
+            key="connect_wallet"
         )
-
-        return result
-
+        if isinstance(result, list) and result:
+            return result[0]
     except Exception:
-        return None
-
-
-def get_wallet_connection_error(wallet_result):
-    if isinstance(wallet_result, dict) and wallet_result.get("reason"):
-        return wallet_result.get("reason")
+        pass
     return None
-
-
-def connect_wallet_button(key="connect_wallet_button"):
-    """Render a browser-side button so MetaMask opens from a real click event."""
-    return streamlit_js_eval(
-        js_expressions=f"""
-            setFrameHeight(46);
-            document.body.innerHTML = `
-                <button id="radoms-connect-wallet" style="
-                    width: 100%;
-                    padding: 0.6rem 1rem;
-                    background: #C8E6C9;
-                    color: #1B5E20;
-                    border: 1px solid #81C784;
-                    border-radius: 20px;
-                    cursor: pointer;
-                    font: 600 0.95rem system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                ">
-                    Connect MetaMask
-                </button>
-            `;
-
-            document.getElementById("radoms-connect-wallet").onclick = async function() {{
-                const ethereum = {ETHEREUM_PROVIDER_JS};
-
-                if (!ethereum) {{
-                    sendDataToPython({{ value: {{ ok: false, reason: "no_metamask" }}, dataType: "json" }});
-                    return;
-                }}
-
-                try {{
-                    const accounts = await ethereum.request({{ method: "eth_requestAccounts" }});
-                    sendDataToPython({{
-                        value: {{ ok: true, address: accounts && accounts.length ? accounts[0] : null }},
-                        dataType: "json"
-                    }});
-                }} catch (err) {{
-                    sendDataToPython({{
-                        value: {{ ok: false, reason: err && err.message ? err.message : "request_rejected" }},
-                        dataType: "json"
-                    }});
-                }}
-            }};
-
-            false;
-        """,
-        key=key
-    )
 
 
 def get_user_address():
     """Ask the browser for the currently connected wallet address."""
     try:
         address = streamlit_js_eval(
-            js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.selectedAddress ? ethereum.selectedAddress : null; }})()",
+            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
             key="get_address"
         )
         return w3.to_checksum_address(address) if address else None
@@ -206,22 +93,20 @@ def get_user_address():
 
 
 def get_network_id():
-    if 'chain_id' in st.session_state and st.session_state['chain_id']:
-        return st.session_state['chain_id']
     try:
         # Check multiple possible properties where MetaMask stores chain ID
         properties_to_try = [
-            "chainId",
-            "networkVersion",
-            "_chainId",
-            "_networkVersion"
+            "window.ethereum.chainId",
+            "window.ethereum.networkVersion",
+            "window.ethereum._chainId", 
+            "window.ethereum._networkVersion"
         ]
         
         for prop in properties_to_try:
             try:
                 value = streamlit_js_eval(
-                    js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.{prop} ? ethereum.{prop} : null; }})()",
-                    key=f"chain_{prop}"
+                    js_expressions=f"window.ethereum && {prop} ? {prop} : null",
+                    key=f"chain_{prop.split('.')[-1]}"
                 )
                 if value and value != 'null' and value != 'undefined':
                     # If it's a hex string, convert to decimal
@@ -235,6 +120,77 @@ def get_network_id():
         return None
     except Exception:
         return None
+
+
+def get_contract_admin_address():
+    try:
+        return w3.to_checksum_address(contract.functions.admin().call())
+    except Exception:
+        return None
+
+
+def is_connected_contract_admin():
+    admin_address = get_contract_admin_address()
+    wallet_address = st.session_state.get('wallet_address')
+    return bool(
+        admin_address
+        and wallet_address
+        and admin_address.lower() == wallet_address.lower()
+    )
+
+
+def ensure_wallet_ready():
+    if not st.session_state.get('wallet_address'):
+        return False, "Please connect your MetaMask wallet first."
+
+    network_id = get_network_id()
+    if network_id and network_id != '11155111':
+        return False, f"Please connect to Sepolia testnet in MetaMask. Current network: {network_id}."
+
+    return True, None
+
+
+def send_contract_transaction(function_call, key, gas=200000):
+    tx = function_call.build_transaction({
+        'from': st.session_state['wallet_address'],
+        'nonce': w3.eth.get_transaction_count(st.session_state['wallet_address']),
+        'gas': gas,
+        'gasPrice': w3.eth.gas_price
+    })
+
+    tx_data = {
+        'to': tx['to'],
+        'from': tx['from'],
+        'data': tx['data'],
+        'value': hex(tx.get('value', 0)),
+        'gas': hex(tx['gas']),
+        'gasPrice': hex(tx['gasPrice'])
+    }
+
+    js_code = f"""
+    window.ethereum.request({{
+        method: 'eth_sendTransaction',
+        params: [{tx_data}]
+    }}).then(function(txHash) {{
+        return txHash;
+    }}).catch(function(error) {{
+        throw error;
+    }});
+    """
+
+    return streamlit_js_eval(js_expressions=js_code, key=key)
+
+
+def get_provider_details(provider_address):
+    try:
+        return contract.functions.getProviderDetails(w3.to_checksum_address(provider_address)).call()
+    except Exception:
+        return None
+
+
+def is_provider_registered_on_chain(provider_address):
+    provider_details = get_provider_details(provider_address)
+    return bool(provider_details and provider_details[5])
 
 
 def get_request_events(request_id: int):
@@ -264,6 +220,28 @@ def get_request_events(request_id: int):
     return sorted(events, key=lambda e: e['block_number'] or 0)
 
 
+def get_total_request_count():
+    next_request_id = contract.functions.nextRequestId().call()
+    return max(next_request_id - 1, 0)
+
+
+def get_service_request(request_id: int):
+    return contract.functions.getRequestDetails(request_id).call()
+
+
+def iter_service_requests():
+    for request_id in range(1, get_total_request_count() + 1):
+        yield request_id, get_service_request(request_id)
+
+
+def request_status(request_data):
+    return config.STATUS_MAP.get(request_data[5], "Processing")
+
+
+def request_provider(request_data):
+    return request_data[4]
+
+
 def remember_customer_request(customer_email, pest_type, description, location, wallet_address, tx_hash=None):
     customer_requests = st.session_state['local_customer_requests'].setdefault(customer_email, [])
     if tx_hash and any(request.get('tx_hash') == tx_hash for request in customer_requests):
@@ -280,12 +258,6 @@ def remember_customer_request(customer_email, pest_type, description, location, 
 
 if 'wallet_address' not in st.session_state:
     st.session_state['wallet_address'] = None
-if 'chain_id' not in st.session_state:
-    st.session_state['chain_id'] = None
-if 'wallet_connection_pending' not in st.session_state:
-    st.session_state['wallet_connection_pending'] = False
-if 'wallet_connection_attempt' not in st.session_state:
-    st.session_state['wallet_connection_attempt'] = 0
 
 if st.session_state['wallet_address'] is None and has_metamask():
     detected_address = get_user_address()
@@ -331,11 +303,6 @@ if 'current_provider_name' not in st.session_state:
     st.session_state['current_provider_name'] = ''
 if 'provider_portal_step' not in st.session_state:
     st.session_state['provider_portal_step'] = 'login'
-if 'admin_logged_in' not in st.session_state:
-    st.session_state['admin_logged_in'] = False
-if 'admin_username' not in st.session_state:
-    st.session_state['admin_username'] = ''
-
 # --- HEADER LOGIC ---
 st.title(config.APP_NAME)
 
@@ -354,19 +321,16 @@ with st.sidebar:
             network_name = "Sepolia" if network_id == '11155111' else f"Chain ID: {network_id}"
             st.info(f"Connected network: {network_name}")
     else:
-        # Use st-wallet for robust connection in deployed apps
-        wallet_data = st_wallet(key="wallet_connect_sidebar")
-        
-        if wallet_data:
-            # st-wallet returns a dict with address and chainId
-            wallet_address = wallet_data.get("address")
-            chain_id = wallet_data.get("chainId")
-            
-            if wallet_address:
-                st.session_state['wallet_address'] = w3.to_checksum_address(wallet_address)
-                if chain_id:
-                    st.session_state['chain_id'] = str(chain_id)
-                st.rerun()
+        if st.button("Connect MetaMask"):
+            if not has_metamask():
+                st.error("MetaMask is not available in this browser.")
+            else:
+                user_wallet = request_wallet_connection()
+                if user_wallet:
+                    st.session_state['wallet_address'] = w3.to_checksum_address(user_wallet)
+                    st.experimental_rerun()
+                else:
+                    st.error("Unable to connect MetaMask. Please ensure MetaMask is installed, unlocked, and that you approved the connection request.")
     
     st.divider()
     page = st.radio("Access Level", ["Live Dashboard", "Company Profile", "Customer Portal", "Service Provider", "Supply Chain", "Admin Panel"])
@@ -452,22 +416,22 @@ if page == "Company Profile":
 elif page == "Live Dashboard":
     st.header("Network Vital Signs")
     try:
-        total_req = contract.functions.requestCount().call()
-        fee = contract.functions.COMMISSION_PERCENT().call()
+        total_req = get_total_request_count()
         
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Jobs Logged", total_req)
-        c2.metric("Platform Fee", f"{fee}%")
+        c2.metric("Contract ABI", "RADOMS v2")
         c3.metric("Network Status", "Active (Sepolia)")
 
         st.subheader("Permanent Service Ledger")
         if total_req > 0:
             for i in range(total_req, 0, -1):
-                data = contract.functions.requests(i).call()
-                status = config.STATUS_MAP.get(data[5], "Processing")
-                with st.expander(f"Job #{i}: {data[3]} | Status: {status}"):
-                    st.write(f"**Location:** {data[4]}")
+                data = get_service_request(i)
+                status = request_status(data)
+                with st.expander(f"Job #{data[0]}: {data[2]} | Status: {status}"):
+                    st.write(f"**Location:** {data[3]}")
                     st.write(f"**Customer Address:** {data[1]}")
+                    st.write(f"**Assigned Provider:** {request_provider(data)}")
     except Exception as e:
         st.error(f"Sync failed: {str(e)}")
 
@@ -479,14 +443,18 @@ elif page == "Supply Chain":
     request_id = st.number_input("Request Number", min_value=1, step=1)
     if st.button("Reveal Transaction History"):
         try:
-            request_data = contract.functions.requests(request_id).call()
-            st.markdown(f"**Request ID:** {request_id}")
+            request_data = get_service_request(request_id)
+            st.markdown(f"**Request ID:** {request_data[0]}")
             st.markdown(f"**Customer:** {request_data[1]}")
-            st.markdown(f"**Provider:** {request_data[2]}")
-            st.markdown(f"**Pest Type:** {request_data[3]}")
-            st.markdown(f"**Service Location:** {request_data[4]}")
-            st.markdown(f"**Status:** {config.STATUS_MAP.get(request_data[5], 'Processing')}")
+            st.markdown(f"**Provider:** {request_provider(request_data)}")
+            st.markdown(f"**Pest Type:** {request_data[2]}")
+            st.markdown(f"**Service Location:** {request_data[3]}")
+            st.markdown(f"**Status:** {request_status(request_data)}")
             st.markdown(f"**Created At (Unix):** {request_data[6]}")
+            st.markdown(f"**Started At (Unix):** {request_data[7]}")
+            st.markdown(f"**Completed At (Unix):** {request_data[8]}")
+            if request_data[9]:
+                st.markdown(f"**Service Notes:** {request_data[9]}")
 
             events = get_request_events(request_id)
             if events:
@@ -524,16 +492,37 @@ elif page == "Customer Portal":
                     elif email in st.session_state['registered_customers']:
                         st.warning("This email is already registered. Please login instead.")
                     else:
-                        st.session_state['registered_customers'][email] = {
-                            'full_name': full_name,
-                            'password': create_password,
-                            'contact_number': contact_number,
-                            'home_address': home_address
-                        }
-                        st.session_state['customer_logged_in'] = True
-                        st.session_state['customer_email'] = email
-                        st.session_state['customer_portal_step'] = 'service'
-                        st.success("Registration successful. You are now logged in.")
+                        wallet_ready, wallet_error = ensure_wallet_ready()
+                        if not wallet_ready:
+                            st.error(wallet_error)
+                        elif any(
+                            customer.get('wallet_address', '').lower() == st.session_state['wallet_address'].lower()
+                            for customer in st.session_state['registered_customers'].values()
+                        ):
+                            st.error("This wallet is already linked to another customer account.")
+                        else:
+                            try:
+                                tx_result = send_contract_transaction(
+                                    contract.functions.registerCustomer(full_name, home_address),
+                                    key=f"register_customer_{email}_{st.session_state['wallet_address']}",
+                                    gas=120000
+                                )
+                                st.session_state['registered_customers'][email] = {
+                                    'full_name': full_name,
+                                    'password': create_password,
+                                    'contact_number': contact_number,
+                                    'home_address': home_address,
+                                    'wallet_address': st.session_state['wallet_address'],
+                                    'registration_tx': tx_result
+                                }
+                                st.session_state['customer_logged_in'] = True
+                                st.session_state['customer_email'] = email
+                                st.session_state['customer_portal_step'] = 'service'
+                                st.success("Registration submitted to the smart contract. You are now logged in.")
+                                if tx_result:
+                                    st.info(f"Customer registration transaction: {tx_result}")
+                            except Exception as e:
+                                st.error(f"Failed to register customer on the smart contract: {str(e)}")
             if st.button("Already a member? Login here"):
                 st.session_state['customer_portal_step'] = 'login'
         else:
@@ -579,7 +568,7 @@ elif page == "Customer Portal":
                 
                 # Check MetaMask availability
                 metamask_exists = streamlit_js_eval(
-                    js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return typeof ethereum !== 'undefined' && ethereum !== null; }})()",
+                    js_expressions="typeof window.ethereum !== 'undefined'",
                     key="debug_metamask_exists"
                 )
                 st.write(f"**MetaMask Extension Available:** {metamask_exists}")
@@ -587,34 +576,34 @@ elif page == "Customer Portal":
                 if metamask_exists:
                     # Check if connected
                     is_connected = streamlit_js_eval(
-                        js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.isConnected ? ethereum.isConnected() : 'N/A'; }})()",
+                        js_expressions="window.ethereum && window.ethereum.isConnected ? window.ethereum.isConnected() : 'N/A'",
                         key="debug_connected"
                     )
                     st.write(f"**MetaMask Connected:** {is_connected}")
                     
                     # Check selected address
                     selected_address = streamlit_js_eval(
-                        js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.selectedAddress ? ethereum.selectedAddress : null; }})()",
+                        js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
                         key="debug_address"
                     )
                     st.write(f"**Selected Address:** {selected_address[:10] + '...' if selected_address else 'None'}")
                     
                     # Try different ways to get chain ID
                     chain_id_hex = streamlit_js_eval(
-                        js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.chainId ? ethereum.chainId : 'N/A'; }})()",
+                        js_expressions="window.ethereum && window.ethereum.chainId ? window.ethereum.chainId : 'N/A'",
                         key="debug_chain_id"
                     )
                     st.write(f"**Chain ID (hex):** {chain_id_hex}")
                     
                     network_version = streamlit_js_eval(
-                        js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.networkVersion ? ethereum.networkVersion : 'N/A'; }})()",
+                        js_expressions="window.ethereum && window.ethereum.networkVersion ? window.ethereum.networkVersion : 'N/A'",
                         key="debug_network_version"
                     )
                     st.write(f"**Network Version:** {network_version}")
                     
                     # Check if accounts are connected (simplified)
                     accounts_check = streamlit_js_eval(
-                        js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum && ethereum.selectedAddress ? 'Connected' : 'Not connected'; }})()",
+                        js_expressions="window.ethereum && window.ethereum.selectedAddress ? 'Connected' : 'Not connected'",
                         key="debug_accounts_simple"
                     )
                     st.write(f"**Wallet Connection Status:** {accounts_check}")
@@ -622,16 +611,16 @@ elif page == "Customer Portal":
                     # Try different property access patterns
                     st.write("**Property Access Attempts:**")
                     props_to_check = [
-                        ("chainId", "chainId"),
-                        ("networkVersion", "networkVersion"),
-                        ("_chainId", "_chainId"),
-                        ("_networkVersion", "_networkVersion")
+                        ("window.ethereum.chainId", "chainId"),
+                        ("window.ethereum.networkVersion", "networkVersion"), 
+                        ("window.ethereum._chainId", "_chainId"),
+                        ("window.ethereum._networkVersion", "_networkVersion")
                     ]
                     
                     for prop_expr, prop_name in props_to_check:
                         try:
                             value = streamlit_js_eval(
-                                js_expressions=f"(() => {{ const ethereum = {ETHEREUM_PROVIDER_JS}; return ethereum ? ethereum.{prop_expr} : 'No MetaMask'; }})()",
+                                js_expressions=f"window.ethereum ? {prop_expr} : 'No MetaMask'",
                                 key=f"debug_{prop_name}"
                             )
                             st.write(f"  - {prop_name}: {value}")
@@ -648,7 +637,7 @@ elif page == "Customer Portal":
                 st.write("- Check that MetaMask is set to Sepolia testnet in the network dropdown")
                 
                 if st.button("Refresh Network Detection"):
-                    st.rerun()
+                    st.experimental_rerun()
             
             with st.form("req_form"):
                 p_type = st.selectbox("Pest Type", ["Cockroaches", "Termites", "Rodents", "Mosquitoes", "Other"])
@@ -679,46 +668,11 @@ elif page == "Customer Portal":
                                 
                                 # Build transaction data
                                 try:
-                                    # Get the function signature
-                                    create_request_func = contract.functions.createRequest(p_type, saved_location)
-                                    
-                                    # Build the transaction using Web3 v7 syntax
-                                    tx = create_request_func.build_transaction({
-                                        'from': st.session_state['wallet_address'],
-                                        'nonce': w3.eth.get_transaction_count(st.session_state['wallet_address']),
-                                        'gas': 200000,
-                                        'gasPrice': w3.eth.gas_price
-                                    })
-                                    
-                                    # Convert transaction to hex format for MetaMask
-                                    tx_data = {
-                                        'to': tx['to'],
-                                        'from': tx['from'],
-                                        'data': tx['data'],
-                                        'value': hex(tx.get('value', 0)),
-                                        'gas': hex(tx['gas']),
-                                        'gasPrice': hex(tx['gasPrice'])
-                                    }
-                                    
-                                    # Use MetaMask to send the transaction
-                                    js_code = f"""
-                                    const ethereum = {ETHEREUM_PROVIDER_JS};
-                                    if (!ethereum) {{
-                                        throw new Error('MetaMask provider not found');
-                                    }}
-                                    ethereum.request({{
-                                        method: 'eth_sendTransaction',
-                                        params: [{tx_data}]
-                                    }}).then(function(txHash) {{
-                                        console.log('Transaction sent:', txHash);
-                                        return txHash;
-                                    }}).catch(function(error) {{
-                                        console.error('Transaction failed:', error);
-                                        throw error;
-                                    }});
-                                    """
-                                    
-                                    tx_result = streamlit_js_eval(js_expressions=js_code, key=f"send_tx_{st.session_state['wallet_address']}")
+                                    tx_result = send_contract_transaction(
+                                        contract.functions.createServiceRequest(p_type, saved_location),
+                                        key=f"create_service_request_{st.session_state['wallet_address']}_{p_type}",
+                                        gas=220000
+                                    )
                                     
                                     if tx_result:
                                         remember_customer_request(
@@ -732,7 +686,7 @@ elif page == "Customer Portal":
                                         current_customer['wallet_address'] = st.session_state['wallet_address']
                                         st.success(f"✅ Service request submitted successfully! Transaction: {tx_result[:10]}...")
                                         st.info("Your request has been recorded on the blockchain. You can track its status in the 'Track Service' tab.")
-                                        st.rerun()
+                                        st.experimental_rerun()
                                     else:
                                         remember_customer_request(
                                             st.session_state['customer_email'],
@@ -780,19 +734,19 @@ elif page == "Customer Portal":
 
                 st.markdown("### Blockchain Records")
                 try:
-                    total_req = contract.functions.requestCount().call()
                     customer_requests = []
-                    for i in range(1, total_req + 1):
-                        data = contract.functions.requests(i).call()
+                    for i, data in iter_service_requests():
                         if data[1].lower() == customer_wallet.lower():
                             customer_requests.append((i, data))
 
                     if customer_requests:
                         for req_id, data in reversed(customer_requests):
-                            status = config.STATUS_MAP.get(data[5], "Processing")
-                            with st.expander(f"Job #{req_id}: {data[3]} | Status: {status}"):
-                                st.write(f"**Description:** {data[4]}")
-                                st.write(f"**Service Provider:** {data[2]}")
+                            status = request_status(data)
+                            with st.expander(f"Job #{req_id}: {data[2]} | Status: {status}"):
+                                st.write(f"**Service Location:** {data[3]}")
+                                st.write(f"**Service Provider:** {request_provider(data)}")
+                                if data[9]:
+                                    st.write(f"**Service Notes:** {data[9]}")
                     else:
                         st.info("No service requests found for your account.")
                 except Exception as e:
@@ -858,6 +812,7 @@ elif page == "Service Provider":
                 
                 # Service areas
                 service_areas = st.text_input("Service areas (cities/regions covered)")
+                certifications = st.text_area("Certifications / licenses")
                 
                 # Contact details
                 contact_phone = st.text_input("Contact phone number")
@@ -875,18 +830,56 @@ elif page == "Service Provider":
                     elif company_name in st.session_state['registered_providers']:
                         st.warning("This company name is already registered. Please login instead.")
                     else:
+                        wallet_ready, wallet_error = ensure_wallet_ready()
+                        if not wallet_ready:
+                            st.error(wallet_error)
+                            st.stop()
+
+                        provider_wallet = st.session_state['wallet_address']
+                        if any(
+                            provider.get('wallet_address', '').lower() == provider_wallet.lower()
+                            for provider in st.session_state['registered_providers'].values()
+                        ):
+                            st.error("This wallet is already linked to another service provider account.")
+                            st.stop()
+
+                        if is_provider_registered_on_chain(provider_wallet):
+                            st.error("This wallet is already registered as a provider on the smart contract.")
+                            st.stop()
+
+                        try:
+                            tx_result = send_contract_transaction(
+                                contract.functions.registerProvider(
+                                    company_name,
+                                    service_areas or physical_address,
+                                    certifications or registration_number
+                                ),
+                                key=f"register_provider_{company_name}_{st.session_state['wallet_address']}",
+                                gas=220000
+                            )
+                        except Exception as e:
+                            st.error(f"Failed to register provider on the smart contract: {str(e)}")
+                            st.stop()
+
+                        if not tx_result:
+                            st.warning("MetaMask did not return a transaction hash. Please approve the transaction in MetaMask and submit again if no transaction was created.")
+                            st.stop()
+
                         st.session_state['registered_providers'][company_name] = {
                             'registration_number': registration_number,
                             'password': create_password,
                             'years_operation': years_operation,
                             'physical_address': physical_address,
                             'service_areas': service_areas,
+                            'certifications': certifications,
                             'contact_phone': contact_phone,
                             'contact_email': contact_email,
-                            'status': 'pending'  # Set status to pending for admin approval
+                            'wallet_address': st.session_state['wallet_address'],
+                            'status': 'pending',
+                            'registration_tx': tx_result
                         }
                         st.success("✅ Registration successful! Your application is now pending admin approval. You will be able to login once approved.")
-                        st.info("An admin will review your details and approve/reject your application shortly.")
+                        st.info("The contract deployer must approve your provider account from the Admin Panel.")
                         st.session_state['provider_portal_step'] = 'login'
                         st.rerun()
             
@@ -912,18 +905,20 @@ elif page == "Service Provider":
             st.divider()
             
             try:
-                next_id = contract.functions.nextRequestId().call()
-                total_req = max(next_id - 1, 0)  # Convert nextRequestId to total count
                 provider_jobs = []
+                current_provider_wallet = st.session_state['registered_providers'].get(
+                    st.session_state['current_provider_name'], {}
+                ).get('wallet_address', '')
                 
                 # Get all jobs allocated to this provider
-                for i in range(1, total_req + 1):
-                    request_data = contract.functions.requests(i).call()
+                for i, request_data in iter_service_requests():
                     # Check if this job is assigned to the current provider
-                    # request_data[2] is the provider address
-                    if request_data[2] != "0x0000000000000000000000000000000000000000":  # If provider is assigned
-                        # For now, we'll display all assigned jobs
-                        # In a production app, you'd match against the provider's wallet address
+                    provider_address = request_provider(request_data)
+                    if (
+                        provider_address != ZERO_ADDRESS
+                        and current_provider_wallet
+                        and provider_address.lower() == current_provider_wallet.lower()
+                    ):
                         provider_jobs.append((i, request_data))
                 
                 if provider_jobs:
@@ -970,13 +965,13 @@ elif page == "Service Provider":
                         
                         status = config.STATUS_MAP.get(status_code, "Processing")
                         
-                        with st.expander(f"📋 Job #{req_id} - {data[3]} | Status: {status}", expanded=False):
+                        with st.expander(f"📋 Job #{req_id} - {data[2]} | Status: {status}", expanded=False):
                             col1, col2 = st.columns(2)
                             
                             with col1:
                                 st.markdown("**Request Details**")
-                                st.write(f"**Pest Type:** {data[3]}")
-                                st.write(f"**Location:** {data[4]}")
+                                st.write(f"**Pest Type:** {data[2]}")
+                                st.write(f"**Location:** {data[3]}")
                                 st.write(f"**Status:** {status}")
                                 st.write(f"**Request ID:** {req_id}")
                             
@@ -993,12 +988,28 @@ elif page == "Service Provider":
                             if status_code == 1:  # Assigned - can start service
                                 with st_col1:
                                     if st.button("✅ Start Service", key=f"start_{req_id}"):
-                                        st.success(f"Service for Job #{req_id} has been started!")
+                                        tx_result = send_contract_transaction(
+                                            contract.functions.startService(req_id),
+                                            key=f"start_service_{req_id}_{current_provider_wallet}",
+                                            gas=140000
+                                        )
+                                        st.success(f"Service for Job #{req_id} has been started.")
+                                        if tx_result:
+                                            st.info(f"Start transaction: {tx_result}")
+                                        st.rerun()
                             
                             elif status_code == 3:  # In Progress - can complete service
                                 with st_col1:
                                     if st.button("🏁 Complete Service", key=f"complete_{req_id}"):
-                                        st.success(f"Service for Job #{req_id} has been completed!")
+                                        tx_result = send_contract_transaction(
+                                            contract.functions.completeService(req_id, "Completed by provider"),
+                                            key=f"complete_service_{req_id}_{current_provider_wallet}",
+                                            gas=160000
+                                        )
+                                        st.success(f"Service for Job #{req_id} has been completed.")
+                                        if tx_result:
+                                            st.info(f"Completion transaction: {tx_result}")
+                                        st.rerun()
                             
                             # Always allow viewing transaction history
                             with st_col2:
@@ -1015,7 +1026,15 @@ elif page == "Service Provider":
                             if status_code not in [4, 5]:
                                 with st_col3:
                                     if st.button("❌ Cancel Job", key=f"cancel_{req_id}"):
+                                        tx_result = send_contract_transaction(
+                                            contract.functions.cancelServiceRequest(req_id),
+                                            key=f"cancel_service_{req_id}_{current_provider_wallet}",
+                                            gas=140000
+                                        )
                                         st.warning(f"Job #{req_id} has been cancelled.")
+                                        if tx_result:
+                                            st.info(f"Cancellation transaction: {tx_result}")
+                                        st.rerun()
                 else:
                     st.info("No jobs allocated to you yet. Check back soon or contact admin for job assignments.")
             except Exception as e:
@@ -1029,34 +1048,33 @@ elif page == "Service Provider":
 
 elif page == "Admin Panel":
     st.header("System Governance")
-    allowed_admin_users = {"danel", "omphile", "malwande", "azwindini", "samkelisiwe", "rose"}
-
-    if not st.session_state['admin_logged_in']:
-        st.subheader("Admin Login")
-        with st.form("admin_login_form"):
-            admin_username = st.text_input("Username")
-            admin_password = st.text_input("Password", type="password")
-
-            if st.form_submit_button("Login"):
-                normalized_username = admin_username.strip().lower()
-                normalized_password = admin_password.strip().lower()
-
-                if normalized_username in allowed_admin_users and normalized_password == "radoms69":
-                    st.session_state['admin_logged_in'] = True
-                    st.session_state['admin_username'] = admin_username.strip().title()
-                    st.success(f"Welcome, {st.session_state['admin_username']}.")
-                    st.rerun()
-                else:
-                    st.error("Invalid admin username or password.")
-
+    contract_admin_address = get_contract_admin_address()
+    if contract_admin_address:
+        st.caption(f"Contract deployer/admin: {contract_admin_address}")
+    else:
+        st.error("Unable to read the contract deployer/admin address from the smart contract.")
         st.stop()
 
-    st.success(f"Logged in as admin: {st.session_state['admin_username']}")
-    if st.button("Logout", key="admin_logout"):
-        st.session_state['admin_logged_in'] = False
-        st.session_state['admin_username'] = ''
-        st.rerun()
+    if not st.session_state.get('wallet_address'):
+        st.warning("Connect the MetaMask wallet that deployed the smart contract to access administration.")
+        if st.button("Connect Admin Wallet", key="connect_admin_wallet"):
+            if not has_metamask():
+                st.error("MetaMask is not available in this browser.")
+            else:
+                user_wallet = request_wallet_connection()
+                if user_wallet:
+                    st.session_state['wallet_address'] = w3.to_checksum_address(user_wallet)
+                    st.rerun()
+                else:
+                    st.error("Unable to connect MetaMask. Please approve the connection request.")
+        st.stop()
 
+    if not is_connected_contract_admin():
+        st.error("Access denied. The connected wallet is not the smart contract deployer/admin.")
+        st.info(f"Connected wallet: {st.session_state['wallet_address']}")
+        st.stop()
+
+    st.success(f"Admin wallet connected: {st.session_state['wallet_address']}")
     st.write("Use this section to verify SMEs and manage supply chain coordination.")
     
     st.divider()
@@ -1093,15 +1111,36 @@ elif page == "Admin Panel":
                             st.write(f"**Service Areas:** {provider_data.get('service_areas', 'N/A')}")
                             st.write(f"**Contact Phone:** {provider_data.get('contact_phone', 'N/A')}")
                             st.write(f"**Contact Email:** {provider_data.get('contact_email', 'N/A')}")
+                            st.write(f"**Wallet:** {provider_data.get('wallet_address', 'Not linked')}")
                         
                         st.divider()
                         act_col1, act_col2 = st.columns(2)
                         
                         with act_col1:
                             if st.button(f"✅ Approve {company_name}", key=f"approve_{company_name}"):
-                                st.session_state['registered_providers'][company_name]['status'] = 'approved'
-                                st.success(f"✅ {company_name} has been approved as a verified SME!")
-                                st.rerun()
+                                provider_wallet = provider_data.get('wallet_address')
+                                wallet_ready, wallet_error = ensure_wallet_ready()
+                                if not wallet_ready:
+                                    st.error(wallet_error)
+                                elif not provider_wallet:
+                                    st.error("This provider does not have a linked wallet address.")
+                                elif not is_connected_contract_admin():
+                                    st.error("Approval blocked. Connect the wallet that deployed the smart contract.")
+                                else:
+                                    try:
+                                        tx_result = send_contract_transaction(
+                                            contract.functions.approveProvider(w3.to_checksum_address(provider_wallet)),
+                                            key=f"approve_provider_{company_name}_{provider_wallet}",
+                                            gas=160000
+                                        )
+                                        st.session_state['registered_providers'][company_name]['status'] = 'approved'
+                                        st.session_state['registered_providers'][company_name]['approval_tx'] = tx_result
+                                        st.success(f"{company_name} has been approved on the smart contract.")
+                                        if tx_result:
+                                            st.info(f"Provider approval transaction: {tx_result}")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to approve provider on the smart contract: {str(e)}")
                         
                         with act_col2:
                             if st.button(f"❌ Reject {company_name}", key=f"reject_{company_name}"):
@@ -1161,7 +1200,25 @@ elif page == "Admin Panel":
             
             if st.form_submit_button("Assign Job"):
                 if assigned_provider:
-                    st.success(f"Job #{request_id} has been successfully assigned to {assigned_provider}.")
-                    st.info(f"Notes: {assignment_notes if assignment_notes else 'No notes provided.'}")
+                    provider_wallet = approved_providers[assigned_provider].get('wallet_address')
+                    if not provider_wallet:
+                        st.error("The selected provider does not have a linked wallet.")
+                    else:
+                        try:
+                            tx_result = send_contract_transaction(
+                                contract.functions.manuallyAssignProvider(
+                                    request_id,
+                                    w3.to_checksum_address(provider_wallet)
+                                ),
+                                key=f"assign_provider_{request_id}_{provider_wallet}",
+                                gas=160000
+                            )
+                            st.success(f"Job #{request_id} has been assigned to {assigned_provider}.")
+                            if tx_result:
+                                st.info(f"Assignment transaction: {tx_result}")
+                            if assignment_notes:
+                                st.info(f"Notes: {assignment_notes}")
+                        except Exception as e:
+                            st.error(f"Failed to assign job on the smart contract: {str(e)}")
                 else:
                     st.error("Please select a service provider to assign the job.")
