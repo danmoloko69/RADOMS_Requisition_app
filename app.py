@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from web3 import Web3
 from streamlit_js_eval import streamlit_js_eval
+import streamlit.components.v1 as components
+import json
 import config
 
 # --- THEME CUSTOMIZATION (Light Green & White) ---
@@ -45,6 +47,7 @@ ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 APP_DIR = Path(__file__).resolve().parent
+WALLETCONNECT_PROJECT_ID = "e4c4bbbb44843c0017a988f9850e41a6"
 
 
 def resolve_asset_path(path: str) -> Path:
@@ -58,6 +61,77 @@ def show_logo():
         st.image(str(logo_path))
     else:
         st.markdown(f"### {config.APP_NAME}")
+
+def walletconnect_component():
+    wallet_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+
+        <script type="module">
+            import {{ EthereumProvider }} from 'https://esm.sh/@walletconnect/ethereum-provider'
+
+            let provider;
+
+            async function connectWallet() {{
+                try {{
+                    provider = await EthereumProvider.init({{
+                        projectId: '{WALLETCONNECT_PROJECT_ID}',
+                        chains: [11155111],
+                        showQrModal: true,
+                        methods: [
+                            'eth_sendTransaction',
+                            'personal_sign',
+                            'eth_signTypedData'
+                        ],
+                        events: [
+                            'accountsChanged',
+                            'chainChanged'
+                        ]
+                    }});
+
+                    await provider.enable();
+
+                    const accounts = provider.accounts;
+
+                    if(accounts.length > 0) {{
+                        const address = accounts[0];
+
+                        window.parent.postMessage({{
+                            type: 'streamlit:setComponentValue',
+                            value: address
+                        }}, '*');
+                    }}
+                }} catch(err) {{
+                    console.error(err);
+                    alert('Wallet connection failed');
+                }}
+            }}
+
+            window.connectWallet = connectWallet;
+        </script>
+     </head>
+
+    <body>
+        <button onclick="connectWallet()"
+        style="
+            background-color:#4CAF50;
+            color:white;
+            border:none;
+            padding:12px 20px;
+            border-radius:10px;
+            cursor:pointer;
+            font-size:16px;
+            width:100%;
+        ">
+            Connect Wallet
+        </button>
+    </body>
+    </html>
+    """
+
+    return components.html(wallet_html, height=80)
 
 def has_metamask():
     try:
@@ -151,34 +225,54 @@ def ensure_wallet_ready():
 
 
 def send_contract_transaction(function_call, key, gas=200000):
-    tx = function_call.build_transaction({
-        'from': st.session_state['wallet_address'],
-        'nonce': w3.eth.get_transaction_count(st.session_state['wallet_address']),
-        'gas': gas,
-        'gasPrice': w3.eth.gas_price
-    })
+    try:
+        tx = function_call.build_transaction({
+            'from': st.session_state['wallet_address'],
+            'nonce': w3.eth.get_transaction_count(st.session_state['wallet_address']),
+            'gas': gas,
+            'gasPrice': w3.eth.gas_price,
+            'chainId': 11155111
+        })
 
-    tx_data = {
-        'to': tx['to'],
-        'from': tx['from'],
-        'data': tx['data'],
-        'value': hex(tx.get('value', 0)),
-        'gas': hex(tx['gas']),
-        'gasPrice': hex(tx['gasPrice'])
-    }
+        tx_data = {
+            'to': tx['to'],
+            'from': tx['from'],
+            'data': tx['data'],
+            'value': hex(tx.get('value', 0)),
+            'gas': hex(tx['gas']),
+            'gasPrice': hex(tx['gasPrice'])
+        }
 
-    js_code = f"""
-    window.ethereum.request({{
-        method: 'eth_sendTransaction',
-        params: [{tx_data}]
-    }}).then(function(txHash) {{
-        return txHash;
-    }}).catch(function(error) {{
-        throw error;
-    }});
-    """
+        tx_json = json.dumps(tx_data)
 
-    return streamlit_js_eval(js_expressions=js_code, key=key)
+        js_code = f"""
+        async function sendTransaction() {{
+            try {{
+                if(window.ethereum) {{
+                    const txHash = await window.ethereum.request({{
+                        method: 'eth_sendTransaction',
+                        params: [{tx_json}]
+                    }});
+
+                    return txHash;
+                }} else {{
+                    return 'NO_WALLET';
+                }}
+            }} catch(err) {{
+                return 'ERROR: ' + err.message;
+            }}
+        }}
+
+        sendTransaction();
+        """
+
+        result = streamlit_js_eval(js_expressions=js_code, key=key)
+
+        return result
+
+    except Exception as e:
+        st.error(f"Transaction error: {str(e)}")
+        return None
 
 
 def get_provider_details(provider_address):
@@ -315,23 +409,36 @@ with st.sidebar:
     show_logo()
     st.header("RADOMS Navigation")
     if st.session_state['wallet_address']:
-        st.success(f"Verified Account: {st.session_state['wallet_address'][:6]}...{st.session_state['wallet_address'][-4:]}")
-        network_id = get_network_id()
-        if network_id:
-            network_name = "Sepolia" if network_id == '11155111' else f"Chain ID: {network_id}"
-            st.info(f"Connected network: {network_name}")
+        st.success(
+            f"Verified Account: {st.session_state['wallet_address'][:6]}...{st.session_state['wallet_address'][-4:]}"
+        )
+        st.info("Connected via WalletConnect")
+
+        if st.button("Disconnect Wallet"):
+            st.session_state['wallet_address'] = None
+            st.rerun()
+
     else:
-        if st.button("Connect MetaMask"):
-            if not has_metamask():
-                st.error("MetaMask is not available in this browser.")
-            else:
-                user_wallet = request_wallet_connection()
-                if user_wallet:
-                    st.session_state['wallet_address'] = w3.to_checksum_address(user_wallet)
-                    st.experimental_rerun()
-                else:
-                    st.error("Unable to connect MetaMask. Please ensure MetaMask is installed, unlocked, and that you approved the connection request.")
-    
+        st.write("### Connect Your Wallet")
+        walletconnect_component()
+
+        detected_wallet = streamlit_js_eval(
+            js_expressions="window.localStorage.getItem('walletconnect')",
+            key="walletconnect_storage"
+        )
+
+        browser_address = streamlit_js_eval(
+            js_expressions="window.ethereum && window.ethereum.selectedAddress ? window.ethereum.selectedAddress : null",
+            key="walletconnect_address"
+        )
+
+        if browser_address:
+            try:
+                st.session_state['wallet_address'] = w3.to_checksum_address(browser_address)
+                st.rerun()
+            except Exception:
+                pass
+
     st.divider()
     page = st.radio("Access Level", ["Live Dashboard", "Company Profile", "Customer Portal", "Service Provider", "Supply Chain", "Admin Panel"])
 
