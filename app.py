@@ -912,7 +912,8 @@ elif page == "Service Provider":
             st.divider()
             
             try:
-                total_req = contract.functions.requestCount().call()
+                next_id = contract.functions.nextRequestId().call()
+                total_req = max(next_id - 1, 0)  # Convert nextRequestId to total count
                 provider_jobs = []
                 
                 # Get all jobs allocated to this provider
