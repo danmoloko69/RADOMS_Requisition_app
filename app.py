@@ -67,71 +67,118 @@ def walletconnect_component():
     <!DOCTYPE html>
     <html>
     <head>
-        <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
 
         <script type="module">
-            import {{ EthereumProvider }} from 'https://esm.sh/@walletconnect/ethereum-provider'
 
-            let provider;
+            import {{ EthereumProvider }}
+            from 'https://esm.sh/@walletconnect/ethereum-provider'
 
             async function connectWallet() {{
-                try {{
-                    provider = await EthereumProvider.init({{
-                        projectId: '{WALLETCONNECT_PROJECT_ID}',
-                        chains: [11155111],
-                        showQrModal: true,
-                        methods: [
-                            'eth_sendTransaction',
-                            'personal_sign',
-                            'eth_signTypedData'
-                        ],
-                        events: [
-                            'accountsChanged',
-                            'chainChanged'
-                        ]
-                    }});
 
+                try {{
+
+                    // ==========================================
+                    // WALLETCONNECT ONLY
+                    // MetaMask selected INSIDE WalletConnect
+                    // ==========================================
+
+                    const provider =
+                        await EthereumProvider.init({{
+                            projectId: '{WALLETCONNECT_PROJECT_ID}',
+
+                            chains: [11155111],
+
+                            showQrModal: true,
+
+                            optionalMethods: [
+                                'eth_sendTransaction',
+                                'personal_sign',
+                                'eth_signTypedData',
+                                'eth_signTypedData_v4'
+                            ],
+
+                            optionalEvents: [
+                                'accountsChanged',
+                                'chainChanged'
+                            ],
+
+                            rpcMap: {{
+                                11155111:
+                                'https://ethereum-sepolia-rpc.publicnode.com'
+                            }}
+                        }});
+
+                    // Opens WalletConnect modal
                     await provider.enable();
 
                     const accounts = provider.accounts;
 
                     if(accounts.length > 0) {{
+
                         const address = accounts[0];
+
+                        // Try switch to Sepolia
+                        try {{
+
+                            await provider.request({{
+                                method: 'wallet_switchEthereumChain',
+                                params: [{{ chainId: '0xaa36a7' }}]
+                            }});
+
+                        }} catch(err) {{
+                            console.log("Chain switch skipped");
+                        }}
 
                         window.parent.postMessage({{
                             type: 'streamlit:setComponentValue',
-                            value: address
+
+                            value: JSON.stringify({{
+                                wallet: address,
+                                provider: 'walletconnect'
+                            }})
                         }}, '*');
                     }}
+
                 }} catch(err) {{
+
                     console.error(err);
-                    alert('Wallet connection failed');
+
+                    alert(
+                        "WalletConnect failed: "
+                        + err.message
+                    );
                 }}
             }}
 
             window.connectWallet = connectWallet;
+
         </script>
-     </head>
+
+    </head>
 
     <body>
-        <button onclick="connectWallet()"
-        style="
-            background-color:#4CAF50;
-            color:white;
-            border:none;
-            padding:12px 20px;
-            border-radius:10px;
-            cursor:pointer;
-            font-size:16px;
-            width:100%;
-        ">
-            Connect Wallet
+
+        <button
+            onclick="connectWallet()"
+            style="
+                background-color:#4CAF50;
+                color:white;
+                border:none;
+                padding:12px 20px;
+                border-radius:10px;
+                cursor:pointer;
+                font-size:16px;
+                width:100%;
+            "
+        >
+            Connect MetaMask
         </button>
+
     </body>
     </html>
     """
 
-    return components.html(wallet_html, height=80)
+    return components.html(wallet_html, height=90)
 
 def has_metamask():
     try:
