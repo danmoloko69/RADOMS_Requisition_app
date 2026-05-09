@@ -77,18 +77,13 @@ def walletconnect_component():
 
                 try {{
 
-                    // ==========================================
-                    // WALLETCONNECT ONLY
-                    // MetaMask selected INSIDE WalletConnect
-                    // ==========================================
-
                     const provider =
                         await EthereumProvider.init({{
                             projectId: '{WALLETCONNECT_PROJECT_ID}',
 
                             chains: [11155111],
 
-                            showQrModal: true,
+                            showQrModal: false,
 
                             optionalMethods: [
                                 'eth_sendTransaction',
@@ -100,51 +95,48 @@ def walletconnect_component():
                             optionalEvents: [
                                 'accountsChanged',
                                 'chainChanged'
-                            ],
-
-                            rpcMap: {{
-                                11155111:
-                                'https://ethereum-sepolia-rpc.publicnode.com'
-                            }}
+                            ]
                         }});
 
-                    // Opens WalletConnect modal
-                    await provider.enable();
+                    // Create WalletConnect session
+                    await provider.connect();
 
-                    const accounts = provider.accounts;
+                    // Get pairing URI
+                    const uri = provider.connector.uri;
 
-                    if(accounts.length > 0) {{
+                    // FORCE METAMASK DESKTOP WALLETCONNECT
+                    const metamaskDeepLink =
+                        `https://metamask.app.link/wc?uri=${{encodeURIComponent(uri)}}`;
 
-                        const address = accounts[0];
+                    // Open MetaMask directly
+                    window.location.href = metamaskDeepLink;
 
-                        // Try switch to Sepolia
-                        try {{
+                    // Wait for approval
+                    provider.on("connect", async () => {{
 
-                            await provider.request({{
-                                method: 'wallet_switchEthereumChain',
-                                params: [{{ chainId: '0xaa36a7' }}]
-                            }});
+                        const accounts = provider.accounts;
 
-                        }} catch(err) {{
-                            console.log("Chain switch skipped");
+                        if(accounts.length > 0) {{
+
+                            const address = accounts[0];
+
+                            window.parent.postMessage({{
+                                type: 'streamlit:setComponentValue',
+
+                                value: JSON.stringify({{
+                                    wallet: address,
+                                    provider: 'metamask-walletconnect'
+                                }})
+                            }}, '*');
                         }}
-
-                        window.parent.postMessage({{
-                            type: 'streamlit:setComponentValue',
-
-                            value: JSON.stringify({{
-                                wallet: address,
-                                provider: 'walletconnect'
-                            }})
-                        }}, '*');
-                    }}
+                    }});
 
                 }} catch(err) {{
 
                     console.error(err);
 
                     alert(
-                        "WalletConnect failed: "
+                        "MetaMask WalletConnect failed: "
                         + err.message
                     );
                 }}
