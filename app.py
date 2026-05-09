@@ -178,7 +178,7 @@ def walletconnect_component():
     </html>
     """
 
-    return components.html(wallet_html, height=400)
+    return components.html(wallet_html, height=500)
 
 def has_metamask():
     try:
